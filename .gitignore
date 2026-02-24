@@ -7,3 +7,6 @@
 *.png
 *.jpg
 *.jpeg
+chroma_db/
+*.bin
+*.sqlite3
