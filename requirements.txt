@@ -5,3 +5,8 @@ fastapi
 uvicorn
 python-dotenv
 pytest
+pypdf
+python-docx
+python-pptx
+pandas
+openpyxl

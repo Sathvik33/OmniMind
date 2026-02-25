@@ -1,24 +1,24 @@
-import uuid
 from pathlib import Path
-from typing import Dict
+import uuid
 
 from backend.app.vectorstore.collection_manager import CollectionManager
-from backend.app.ingestion.loaders.text_loader import load_text
 from backend.app.ingestion.chunking.langchain_chunker import LangchainChunker
+from backend.app.ingestion.loaders.file_router import FileRouter
 
 
 class IngestionPipeline:
+
     def __init__(self):
         self.collection_manager = CollectionManager()
-        self.chunker = LangchainChunker(
-            chunk_size=600,
-            overlap=100
-        )
+        self.chunker = LangchainChunker(600, 100)
+        self.router = FileRouter()
 
-    def ingest_text_file(self, file_path: str) -> Dict:
+    def ingest_file(self, file_path: str):
+
         path = Path(file_path)
 
-        text = load_text(path)
+        loader = self.router.route(path)
+        text = loader.load(path)
 
         chunks = self.chunker.chunk(text)
 
@@ -32,6 +32,6 @@ class IngestionPipeline:
         )
 
         return {
-            "file": str(path.name),
+            "file": path.name,
             "chunks_added": len(chunks)
         }

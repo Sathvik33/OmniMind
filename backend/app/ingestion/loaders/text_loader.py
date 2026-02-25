@@ -1,4 +1,8 @@
 from pathlib import Path
+from .base_loader import BaseLoader
 
-def load_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+
+class TextLoader(BaseLoader):
+
+    def load(self, path: Path) -> str:
+        return path.read_text(encoding="utf-8")
