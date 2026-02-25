@@ -1,6 +1,6 @@
 from pathlib import Path
-from AI.Aegis.backend.app.ingestion.experimental.factory import ChunkingFactory
-from AI.Aegis.backend.app.ingestion.experimental.schemas import ChunkingConfig
+from backend.app.ingestion.experimental.factory import ChunkingFactory
+from backend.app.ingestion.experimental.schemas import ChunkingConfig
 
 def ingest_file(file_path: str):
 
