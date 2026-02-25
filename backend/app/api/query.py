@@ -11,12 +11,9 @@ class QueryRequest(BaseModel):
     top_k: int = 3
 
 
-@router.post("/retrieve")
-def retrieve_data(request: QueryRequest):
+@router.post("/query")
+def query_data(request: QueryRequest):
     pipeline = QueryPipeline()
-    results = pipeline.retrieve(request.query, request.top_k)
+    result = pipeline.answer(request.query, request.top_k)
 
-    return {
-        "query": request.query,
-        "results": results
-    }
+    return result
