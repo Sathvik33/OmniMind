@@ -11,12 +11,12 @@ class QueryRequest(BaseModel):
     top_k: int = 3
 
 
-@router.post("/query")
-def query_data(request: QueryRequest):
+@router.post("/retrieve")
+def retrieve_data(request: QueryRequest):
     pipeline = QueryPipeline()
-    documents = pipeline.retrieve(request.query, request.top_k)
+    results = pipeline.retrieve(request.query, request.top_k)
 
     return {
         "query": request.query,
-        "retrieved_chunks": documents
+        "results": results
     }

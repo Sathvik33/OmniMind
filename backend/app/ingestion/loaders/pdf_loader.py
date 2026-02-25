@@ -1,15 +1,17 @@
 from pathlib import Path
-from pypdf import PdfReader
+import fitz
 from .base_loader import BaseLoader
 
 
 class PDFLoader(BaseLoader):
 
     def load(self, path: Path) -> str:
-        reader = PdfReader(str(path))
-        text = ""
+        doc = fitz.open(path)
+        text_parts = []
 
-        for page in reader.pages:
-            text += page.extract_text() or ""
+        for page in doc:
+            text_parts.append(page.get_text())
 
-        return text 
+        doc.close()
+
+        return "\n".join(text_parts)
