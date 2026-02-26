@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 from backend.app.vectorstore.collection_manager import CollectionManager
 from backend.app.models.ollama_model import OllamaModel
 from langsmith import traceable

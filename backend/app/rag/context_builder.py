@@ -1,3 +1,8 @@
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
 class ContextBuilder:
 
     def build(self, chunks):

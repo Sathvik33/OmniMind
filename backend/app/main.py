@@ -1,3 +1,7 @@
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 from fastapi import FastAPI
 from backend.app.api.health import router as health_router
 from backend.app.api.upload import router as upload_rourter
