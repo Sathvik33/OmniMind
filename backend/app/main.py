@@ -5,6 +5,11 @@ from backend.app.api.query import router as query_router
 from backend.app.api.image import router as image_router
 from backend.app.services.vision_service import VisionService
 from backend.app.api.video import router as video_router
+from langsmith import Client
+import os
+
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_PROJECT"] = "Aegis"
 
 app=FastAPI(
     title="Aegis",

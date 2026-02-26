@@ -1,46 +1,24 @@
 from backend.app.vectorstore.collection_manager import CollectionManager
 from backend.app.models.ollama_model import OllamaModel
+from langsmith import traceable
+from backend.app.rag.retriever import Retriever
+from backend.app.rag.context_builder import ContextBuilder
+from backend.app.rag.generator import Generator
 
 
 class QueryPipeline:
 
     def __init__(self):
         self.collection_manager = CollectionManager()
-        self.llm = OllamaModel()
+        self.retriever = Retriever(self.collection_manager)
+        self.context_builder = ContextBuilder()
+        self.generator = Generator(OllamaModel())
 
-    def retrieve(self, query: str, top_k: int = 3):
-        results = self.collection_manager.query(query, n_results=top_k)
-
-        documents = results.get("documents", [])
-        metadatas = results.get("metadatas", [])
-
-        if documents:
-            return documents[0], metadatas[0] if metadatas else []
-
-        return [], []
-
+    @traceable(name="rag_pipeline")
     def answer(self, query: str, top_k: int = 3):
-        chunks, metadata = self.retrieve(query, top_k)
-
-        context = "\n\n".join(chunks)
-
-        prompt = f"""
-You are a technical knowledge assistant.
-
-Provide a detailed and well-structured explanation.
-Use only the information from the context.
-If the answer is not present, say you don't know.
-
-Context:
-{context}
-
-Question:
-{query}
-
-Answer in detailed explanation format:
-"""
-
-        answer = self.llm.generate(prompt)
+        chunks, metadata = self.retriever.retrieve(query, top_k)
+        context = self.context_builder.build(chunks)
+        answer = self.generator.generate(query, context)
 
         return {
             "answer": answer,
