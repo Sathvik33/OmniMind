@@ -7,3 +7,7 @@ CHROMA_DIR = BASE_DIR / "chroma_db"
 
 DATA_DIR.mkdir(exist_ok=True)
 CHROMA_DIR.mkdir(exist_ok=True)
+
+from backend.app.services.vision_service import VisionService
+
+vision_service = VisionService()

@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from backend.app.api.health import router as health_router
 from backend.app.api.upload import router as upload_rourter
 from backend.app.api.query import router as query_router
+from backend.app.api.image import router as image_router
+from backend.app.services.vision_service import VisionService
 
 app=FastAPI(
     title="Aegis",
@@ -9,13 +11,18 @@ app=FastAPI(
     version="1.0.0"
 )
 
+@app.on_event("startup")
+def load_models():
+    app.state.vision_service = VisionService()
+
 app.include_router(health_router)
 app.include_router(upload_rourter)
 app.include_router(query_router)
+app.include_router(image_router)
 
 
 @app.get("/")
 def home():
     return {
-        "message": "Welcome to Aegis 🛡"
+        "message": "Welcome to Aegis"
     }
