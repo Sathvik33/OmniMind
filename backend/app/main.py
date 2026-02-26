@@ -4,6 +4,7 @@ from backend.app.api.upload import router as upload_rourter
 from backend.app.api.query import router as query_router
 from backend.app.api.image import router as image_router
 from backend.app.services.vision_service import VisionService
+from backend.app.api.video import router as video_router
 
 app=FastAPI(
     title="Aegis",
@@ -19,6 +20,7 @@ app.include_router(health_router)
 app.include_router(upload_rourter)
 app.include_router(query_router)
 app.include_router(image_router)
+app.include_router(video_router)
 
 
 @app.get("/")
