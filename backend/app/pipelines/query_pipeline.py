@@ -32,7 +32,7 @@ class QueryPipeline:
             times = [int(re.findall(r"\d+", s)[0]) for s in seconds]
 
         if len(times) == 1:
-            start_time = times[0]
+            start_time = times[0] 
             end_time = times[0]
         else:
             start_time = min(times)
