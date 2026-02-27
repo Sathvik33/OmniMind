@@ -32,7 +32,6 @@ class CollectionManager:
         return results
     
     def query_time_range(self, start_time: int, end_time: int):
-
         results = self.collection.get(
             where={"modality": "video"}
         )
