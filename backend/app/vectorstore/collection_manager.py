@@ -31,3 +31,20 @@ class CollectionManager:
 
         return results
     
+    def query_time_range(self, start_time: int, end_time: int):
+
+        results = self.collection.get(
+            where={"modality": "video"}
+        )
+
+        documents = results.get("documents", [])
+        metadatas = results.get("metadatas", [])
+
+        filtered_docs = []
+
+        for doc, meta in zip(documents, metadatas):
+            if meta.get("start_time") is not None:
+                if meta["start_time"] <= end_time and meta["end_time"] >= start_time:
+                    filtered_docs.append(doc)
+
+        return filtered_docs
