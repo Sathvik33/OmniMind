@@ -15,7 +15,7 @@ app=FastAPI(
     description="Multi-Model RAG Backend System",
     version="1.0.0"
 )
-
+app.state.video_jobs = {}
 @app.on_event("startup")
 def load_models():
     app.state.vision_service = VisionService()

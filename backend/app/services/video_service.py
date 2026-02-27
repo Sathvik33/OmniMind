@@ -3,20 +3,22 @@ import os
 import uuid
 from pathlib import Path
 
-
 class VideoService:
 
     def __init__(self, vision_service, collection_manager):
         self.vision_service = vision_service
         self.collection_manager = collection_manager
 
-    def process(self, video_path: str, source_name: str):
+    def process(self, video_path: str, source_name: str, job_id: str, app):
+
+        app.state.video_jobs[job_id] = "processing"
 
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
 
         if fps == 0:
             cap.release()
+            app.state.video_jobs[job_id] = "failed"
             return
 
         frame_interval = int(fps * 2)
@@ -57,3 +59,5 @@ class VideoService:
 
         if documents:
             self.collection_manager.add_documents(documents, ids, metadatas)
+
+        app.state.video_jobs[job_id] = "completed"
