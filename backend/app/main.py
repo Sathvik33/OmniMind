@@ -1,6 +1,5 @@
 from dotenv import load_dotenv
 import os
-
 load_dotenv()
 from fastapi import FastAPI
 from backend.app.api.health import router as health_router
@@ -10,10 +9,6 @@ from backend.app.api.image import router as image_router
 from backend.app.services.vision_service import VisionService
 from backend.app.api.video import router as video_router
 from langsmith import Client
-import os
-
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_PROJECT"] = "Aegis"
 
 app=FastAPI(
     title="Aegis",
