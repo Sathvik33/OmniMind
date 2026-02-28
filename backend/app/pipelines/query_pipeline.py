@@ -86,3 +86,18 @@ Answer:
             "answer": answer,
             "context_used": chunks
         }
+    
+    def stream_answer(self, query: str):
+
+        hhmmss, seconds = self.detect_time_query(query)
+
+        if hhmmss or seconds:
+            result = self.handle_time_query(query, hhmmss, seconds)
+            yield result["answer"]
+            return
+
+        chunks, metadata = self.retriever.retrieve(query, 3)
+        context = self.context_builder.build(chunks)
+
+        for token in self.generator.stream_generate(query, context):
+            yield token

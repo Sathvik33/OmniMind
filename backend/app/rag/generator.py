@@ -1,6 +1,8 @@
 from dotenv import load_dotenv
 load_dotenv()
+
 from langsmith import traceable
+
 
 class Generator:
 
@@ -14,7 +16,6 @@ You are a technical knowledge assistant.
 
 Provide a detailed and well-structured explanation.
 Use only the information from the context.
-If the answer is not present, say you don't know.
 
 Context:
 {context}
@@ -25,3 +26,21 @@ Question:
 Answer:
 """
         return self.llm.generate(prompt)
+
+    def stream_generate(self, query: str, context: str):
+        prompt = f"""
+You are a technical knowledge assistant.
+
+Provide a detailed and well-structured explanation.
+Use only the information from the context.
+
+Context:
+{context}
+
+Question:
+{query}
+
+Answer:
+"""
+        for token in self.llm.stream(prompt):
+            yield token
