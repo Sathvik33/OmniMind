@@ -4,7 +4,10 @@ import time
 
 BACKEND_URL = "http://127.0.0.1:8000"
 
-st.set_page_config(page_title="Aegis", layout="wide")
+st.set_page_config(page_title="Aegis", layout="centered")
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 if "job_id" not in st.session_state:
     st.session_state.job_id = None
@@ -14,15 +17,14 @@ if "video_status" not in st.session_state:
 
 st.title("Aegis")
 
-tab1, tab2, tab3 = st.tabs(["Video", "Files & Images", "Query"])
+with st.expander("Upload Files or Video"):
 
-with tab1:
+    video_file = st.file_uploader("Video", type=["mp4", "mov", "avi"])
+    doc_file = st.file_uploader("Document", type=["pdf", "txt", "docx", "pptx", "xlsx"])
+    image_file = st.file_uploader("Image", type=["png", "jpg", "jpeg"])
 
-    st.subheader("Upload Video")
+    if st.button("Upload"):
 
-    video_file = st.file_uploader("Select video", type=["mp4", "mov", "avi"])
-
-    if st.button("Upload and Parse Video"):
         if video_file is not None:
             with st.spinner("Uploading video..."):
                 response = requests.post(
@@ -34,113 +36,69 @@ with tab1:
                 data = response.json()
                 st.session_state.job_id = data["job_id"]
                 st.session_state.video_status = "processing"
-            else:
-                st.error("Upload failed")
 
-    if st.session_state.video_status == "processing":
-
-        job_id = st.session_state.job_id
-
-        status_placeholder = st.empty()
-
-        with st.spinner("Video is parsing. Please wait..."):
-            while True:
-                status_response = requests.get(f"{BACKEND_URL}/video-status/{job_id}")
-                status_data = status_response.json()
-
-                if status_data["status"] == "completed":
-                    st.session_state.video_status = "completed"
-                    break
-
-                if status_data["status"] == "failed":
-                    st.session_state.video_status = "failed"
-                    break
-
-                time.sleep(3)
-
-        if st.session_state.video_status == "completed":
-            st.success("Parsing completed. You may ask your queries.")
-
-        if st.session_state.video_status == "failed":
-            st.error("Video processing failed")
-
-
-with tab2:
-
-    st.subheader("Upload Document")
-
-    doc_file = st.file_uploader(
-        "Select document",
-        type=["pdf", "txt", "docx", "pptx", "xlsx"]
-    )
-
-    if st.button("Upload Document"):
         if doc_file is not None:
             with st.spinner("Uploading document..."):
-                response = requests.post(
+                requests.post(
                     f"{BACKEND_URL}/upload",
                     files={"file": doc_file}
                 )
 
-            if response.status_code == 200:
-                st.success("Document ingested successfully")
-            else:
-                st.error("Document upload failed")
-
-    st.subheader("Upload Image")
-
-    image_file = st.file_uploader(
-        "Select image",
-        type=["png", "jpg", "jpeg"]
-    )
-
-    if st.button("Upload Image"):
         if image_file is not None:
             with st.spinner("Processing image..."):
-                response = requests.post(
+                requests.post(
                     f"{BACKEND_URL}/ingest-image",
                     files={"file": image_file}
                 )
 
-            if response.status_code == 200:
-                data = response.json()
-                st.success("Image ingested successfully")
-                st.write(data["description"])
-            else:
-                st.error("Image upload failed")
+if st.session_state.video_status == "processing":
 
-    st.subheader("Memory Control")
+    with st.spinner("Video is parsing..."):
+        while True:
+            status_response = requests.get(
+                f"{BACKEND_URL}/video-status/{st.session_state.job_id}"
+            )
+            status_data = status_response.json()
 
-    if st.button("Clear Memory"):
-        with st.spinner("Clearing memory..."):
-            response = requests.delete(f"{BACKEND_URL}/clear-memory")
+            if status_data["status"] == "completed":
+                st.session_state.video_status = "completed"
+                break
 
-        if response.status_code == 200:
-            st.success("Memory cleared")
-        else:
-            st.error("Failed to clear memory")
+            if status_data["status"] == "failed":
+                st.session_state.video_status = "failed"
+                break
+
+            time.sleep(3)
+
+    if st.session_state.video_status == "completed":
+        st.success("Video ready")
 
 
-with tab3:
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-    st.subheader("Ask a Question")
+prompt = st.chat_input("Ask something")
 
-    query = st.text_input("Query")
+if prompt:
+    st.session_state.messages.append({"role": "user", "content": prompt})
 
-    if st.button("Submit Query"):
-        if query:
-            with st.spinner("Generating answer..."):
-                response = requests.post(
-                    f"{BACKEND_URL}/query",
-                    json={"query": query}
-                )
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            response = requests.post(
+                f"{BACKEND_URL}/query",
+                json={"query": prompt}
+            )
 
             if response.status_code == 200:
                 result = response.json()
-                st.write(result["answer"])
-
-                with st.expander("Context Used"):
-                    for item in result["context_used"]:
-                        st.write(item)
+                answer = result["answer"]
             else:
-                st.error("Query failed")
+                answer = "Error generating response."
+
+            st.markdown(answer)
+
+    st.session_state.messages.append({"role": "assistant", "content": answer})
