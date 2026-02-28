@@ -24,10 +24,11 @@ with tab1:
 
     if st.button("Upload and Parse Video"):
         if video_file is not None:
-            response = requests.post(
-                f"{BACKEND_URL}/ingest-video",
-                files={"file": video_file}
-            )
+            with st.spinner("Uploading video..."):
+                response = requests.post(
+                    f"{BACKEND_URL}/ingest-video",
+                    files={"file": video_file}
+                )
 
             if response.status_code == 200:
                 data = response.json()
@@ -37,28 +38,31 @@ with tab1:
                 st.error("Upload failed")
 
     if st.session_state.video_status == "processing":
-        st.info("Video is parsing")
 
         job_id = st.session_state.job_id
 
-        while True:
-            status_response = requests.get(f"{BACKEND_URL}/video-status/{job_id}")
-            status_data = status_response.json()
+        status_placeholder = st.empty()
 
-            if status_data["status"] == "completed":
-                st.session_state.video_status = "completed"
-                st.success("Parsing completed. You may ask your queries.")
-                break
+        with st.spinner("Video is parsing. Please wait..."):
+            while True:
+                status_response = requests.get(f"{BACKEND_URL}/video-status/{job_id}")
+                status_data = status_response.json()
 
-            if status_data["status"] == "failed":
-                st.session_state.video_status = "failed"
-                st.error("Video processing failed")
-                break
+                if status_data["status"] == "completed":
+                    st.session_state.video_status = "completed"
+                    break
 
-            time.sleep(3)
+                if status_data["status"] == "failed":
+                    st.session_state.video_status = "failed"
+                    break
 
-    elif st.session_state.video_status == "completed":
-        st.success("Video ready for querying")
+                time.sleep(3)
+
+        if st.session_state.video_status == "completed":
+            st.success("Parsing completed. You may ask your queries.")
+
+        if st.session_state.video_status == "failed":
+            st.error("Video processing failed")
 
 
 with tab2:
@@ -72,10 +76,11 @@ with tab2:
 
     if st.button("Upload Document"):
         if doc_file is not None:
-            response = requests.post(
-                f"{BACKEND_URL}/upload",
-                files={"file": doc_file}
-            )
+            with st.spinner("Uploading document..."):
+                response = requests.post(
+                    f"{BACKEND_URL}/upload",
+                    files={"file": doc_file}
+                )
 
             if response.status_code == 200:
                 st.success("Document ingested successfully")
@@ -91,10 +96,11 @@ with tab2:
 
     if st.button("Upload Image"):
         if image_file is not None:
-            response = requests.post(
-                f"{BACKEND_URL}/ingest-image",
-                files={"file": image_file}
-            )
+            with st.spinner("Processing image..."):
+                response = requests.post(
+                    f"{BACKEND_URL}/ingest-image",
+                    files={"file": image_file}
+                )
 
             if response.status_code == 200:
                 data = response.json()
@@ -106,12 +112,14 @@ with tab2:
     st.subheader("Memory Control")
 
     if st.button("Clear Memory"):
-        response = requests.delete(f"{BACKEND_URL}/clear-memory")
+        with st.spinner("Clearing memory..."):
+            response = requests.delete(f"{BACKEND_URL}/clear-memory")
 
         if response.status_code == 200:
             st.success("Memory cleared")
         else:
             st.error("Failed to clear memory")
+
 
 with tab3:
 
@@ -121,10 +129,11 @@ with tab3:
 
     if st.button("Submit Query"):
         if query:
-            response = requests.post(
-                f"{BACKEND_URL}/query",
-                json={"query": query}
-            )
+            with st.spinner("Generating answer..."):
+                response = requests.post(
+                    f"{BACKEND_URL}/query",
+                    json={"query": query}
+                )
 
             if response.status_code == 200:
                 result = response.json()
