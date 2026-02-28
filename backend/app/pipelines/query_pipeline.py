@@ -22,7 +22,10 @@ class QueryPipeline:
         hhmmss = re.findall(r"\d{2}:\d{2}:\d{2}", query)
         seconds = re.findall(r"\b\d+\s*seconds?\b", query)
 
-        return hhmmss, seconds
+        first_match = re.search(r"first\s+(\d+)\s+seconds?", query)
+        between_match = re.search(r"between\s+(\d+)\s+and\s+(\d+)\s+seconds?", query)
+
+        return hhmmss, seconds, first_match, between_match
 
     def handle_time_query(self, query, hhmmss, seconds):
 
@@ -89,7 +92,37 @@ Answer:
     
     def stream_answer(self, query: str):
 
-        hhmmss, seconds = self.detect_time_query(query)
+        hhmmss, seconds, first_match, between_match = self.detect_time_query(query)
+
+        if first_match:
+            start_time = 0
+            end_time = int(first_match.group(1))
+            segments = self.collection_manager.query_time_range(start_time, end_time)
+
+            if not segments:
+                yield "No video content found for that time range."
+                return
+
+            context = "\n\n".join(segments)
+
+            for token in self.generator.stream_generate(query, context):
+                yield token
+            return
+
+        if between_match:
+            start_time = int(between_match.group(1))
+            end_time = int(between_match.group(2))
+            segments = self.collection_manager.query_time_range(start_time, end_time)
+
+            if not segments:
+                yield "No video content found for that time range."
+                return
+
+            context = "\n\n".join(segments)
+
+            for token in self.generator.stream_generate(query, context):
+                yield token
+            return
 
         if hhmmss or seconds:
             result = self.handle_time_query(query, hhmmss, seconds)

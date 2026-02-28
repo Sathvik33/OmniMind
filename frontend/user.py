@@ -13,7 +13,7 @@ if "show_upload" not in st.session_state:
 
 st.title("Aegis")
 
-top_col1, top_col2 = st.columns([10, 2])
+top_col1, top_col2 = st.columns([10, 3])
 
 with top_col2:
     if st.button("Clear Memory"):
