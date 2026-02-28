@@ -29,7 +29,7 @@ class VisionService:
 
         prompt = (
             "USER: <image>\n"
-            "Provide a detailed and structured description of this image.\n"
+            "Describe what is happening in one or two concise sentences and that has to be accurate.\n"
             "ASSISTANT:"
         )
 
@@ -42,7 +42,7 @@ class VisionService:
         with torch.no_grad():
             output = self.model.generate(
                 **inputs,
-                max_new_tokens=120,
+                max_new_tokens=60,
                 do_sample=False
             )
 
