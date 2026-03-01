@@ -22,6 +22,9 @@ if "job_id" not in st.session_state:
 if "job_type" not in st.session_state:
     st.session_state.job_type = None
 
+if "just_completed" not in st.session_state:
+    st.session_state.just_completed = False
+
 st.title("Aegis")
 
 top_col1, top_col2 = st.columns([10, 3])
@@ -101,12 +104,16 @@ if st.session_state.processing:
 
         if status_data["status"] == "completed":
             st.session_state.processing = False
-            st.success("Ingestion completed")
+            st.session_state.just_completed = True
             st.rerun()
         else:
             st.info("Processing...")
             time.sleep(2)
             st.rerun()
+            
+if st.session_state.just_completed:
+    st.success("Ingestion completed. You can enter your query.")
+    st.session_state.just_completed = False
 
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
