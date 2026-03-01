@@ -11,7 +11,7 @@ from backend.app.api.video import router as video_router
 from langsmith import Client
 
 app=FastAPI(
-    title="Aegis",
+    title="OmniMind",
     description="Multi-Model RAG Backend System",
     version="1.0.0"
 )
@@ -33,5 +33,5 @@ app.include_router(video_router)
 @app.get("/")
 def home():
     return {
-        "message": "Welcome to Aegis"
+        "message": "Welcome to OmniMind"
     }
