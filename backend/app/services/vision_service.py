@@ -29,7 +29,7 @@ class VisionService:
 
         prompt = (
             "USER: <image>\n"
-            "Describe what is happening in one or two concise sentences and that has to be accurate.\n"
+            "Describe what is happening in this image that has to be breif and if any text is present return that text too in two or concise sentences and that has to be accurate.\n"
             "ASSISTANT:"
         )
 
