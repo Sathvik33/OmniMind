@@ -2,6 +2,7 @@ from backend.app.embeddings.embedding_model import EmbeddingModel
 from backend.app.vectorstore.chroma_client import get_chroma_client
 
 class CollectionManager:
+
     def __init__(self, collection_name: str = "aegis_collection"):
         self.client = get_chroma_client()
         self.collection_name = collection_name

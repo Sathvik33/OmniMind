@@ -44,12 +44,11 @@ def video_status(request: Request, job_id: str):
 
 @router.delete("/clear-memory")
 def clear_memory():
-    collection_name = collection_manager.collection.name
+    collection_name = collection_manager.collection_name
 
-    collection_manager.client.delete_collection(collection_name)
-
-    collection_manager.collection = collection_manager.client.get_or_create_collection(
-        name=collection_name
-    )
+    try:
+        collection_manager.client.delete_collection(collection_name)
+    except Exception:
+        pass
 
     return {"message": "Memory cleared successfully"}
