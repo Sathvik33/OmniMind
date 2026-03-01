@@ -1,5 +1,7 @@
 import streamlit as st
+from streamlit.runtime.scriptrunner import RerunException
 import requests
+import time
 
 BACKEND_URL = "http://127.0.0.1:8000"
 
@@ -10,6 +12,15 @@ if "messages" not in st.session_state:
 
 if "show_upload" not in st.session_state:
     st.session_state.show_upload = False
+
+if "processing" not in st.session_state:
+    st.session_state.processing = False
+
+if "job_id" not in st.session_state:
+    st.session_state.job_id = None
+
+if "job_type" not in st.session_state:
+    st.session_state.job_type = None
 
 st.title("Aegis")
 
@@ -32,7 +43,9 @@ with col1:
         st.session_state.show_upload = not st.session_state.show_upload
 
 with col2:
-    prompt = st.chat_input("Ask something from your documents...")
+    prompt = st.chat_input("Ask something from your documents...",
+        disabled=st.session_state.processing
+    )
 
 if st.session_state.show_upload:
     upload_file = st.file_uploader(
@@ -41,20 +54,59 @@ if st.session_state.show_upload:
     )
 
     if upload_file is not None:
+
         endpoint = "/upload"
+        st.session_state.job_type = "document"
 
         if upload_file.type.startswith("image"):
             endpoint = "/ingest-image"
+            st.session_state.job_type = "image"
 
         if upload_file.type.startswith("video"):
             endpoint = "/ingest-video"
+            st.session_state.job_type = "video"
 
-        requests.post(
+        response = requests.post(
             f"{BACKEND_URL}{endpoint}",
             files={"file": upload_file}
         )
 
+        if response.status_code == 200:
+            data = response.json()
+
+            if "job_id" in data:
+                st.session_state.job_id = data["job_id"]
+                st.session_state.processing = True
+            else:
+                st.session_state.processing = False
+
         st.session_state.show_upload = False
+
+if "refresh_counter" not in st.session_state:
+    st.session_state.refresh_counter = 0
+
+if st.session_state.processing:
+
+    status_endpoint = None
+
+    if st.session_state.job_type == "video":
+        status_endpoint = f"/video-status/{st.session_state.job_id}"
+
+    elif st.session_state.job_type == "image":
+        status_endpoint = f"/image-status/{st.session_state.job_id}"
+
+    if status_endpoint:
+        status_response = requests.get(f"{BACKEND_URL}{status_endpoint}")
+        status_data = status_response.json()
+
+        if status_data["status"] == "completed":
+            st.session_state.processing = False
+            st.success("Ingestion completed")
+            st.rerun()
+        else:
+            st.info("Processing...")
+            time.sleep(2)
+            st.rerun()
 
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
