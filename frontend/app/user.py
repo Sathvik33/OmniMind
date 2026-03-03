@@ -5,7 +5,7 @@ import time
 
 BACKEND_URL = "http://127.0.0.1:8000"
 
-st.set_page_config(page_title="Aegis", layout="centered")
+st.set_page_config(page_title="OmniMind", layout="centered")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -25,7 +25,8 @@ if "job_type" not in st.session_state:
 if "just_completed" not in st.session_state:
     st.session_state.just_completed = False
 
-st.title("Aegis")
+st.title("OmniMind")
+st.caption("Your multi-modal RAG assistant. Upload documents, images, or videos and ask")
 
 top_col1, top_col2 = st.columns([10, 3])
 
