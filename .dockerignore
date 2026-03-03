@@ -1,5 +1,40 @@
+# Python
 __pycache__/
-.env
-.git
-*.log
 *.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+env/
+
+# Git
+.git/
+.gitignore
+
+# Local data
+data/
+chroma_db/
+*.sqlite3
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Streamlit cache
+.streamlit/
+
+# Model cache
+.cache/
+huggingface/
+ollama/
+
+# Tests
+tests/
+
+# Not needed in container
+README.md
+LICENSE
