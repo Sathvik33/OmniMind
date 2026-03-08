@@ -20,9 +20,10 @@ class VisionService:
             model_name,
             quantization_config=quant_config,
             device_map={"": 0}
+            
         )
 
-        self.processor = AutoProcessor.from_pretrained(model_name)
+        self.processor = AutoProcessor.from_pretrained(model_name,use_fast=True)
 
     def describe(self, image_path: str) -> str:
         image = Image.open(image_path).convert("RGB")
@@ -43,7 +44,8 @@ class VisionService:
             output = self.model.generate(
                 **inputs,
                 max_new_tokens=60,
-                do_sample=False
+                do_sample=False,
+                KV_cache=True
             )
 
         description = self.processor.batch_decode(
