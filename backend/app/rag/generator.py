@@ -10,29 +10,24 @@ class Generator:
         self.llm = llm
 
     @traceable(name="llm_generation")
-    def generate(self, query: str, context: str):
-        prompt = f"""
-You are a technical knowledge assistant.
-
-Provide a detailed and well-structured explanation.
-Use only the information from the context.
-
-Context:
-{context}
-
-Question:
-{query}
-
-Answer:
-"""
+    def generate(self, query: str, context: str) -> str:
+        prompt = self._build_prompt(query, context)
         return self.llm.generate(prompt)
 
     def stream_generate(self, query: str, context: str):
-        prompt = f"""
-You are a technical knowledge assistant.
+        prompt = self._build_prompt(query, context)
+        for token in self.llm.stream(prompt):
+            yield token
 
-Provide a detailed and well-structured explanation.
-Use only the information from the context.
+    @staticmethod
+    def _build_prompt(query: str, context: str) -> str:
+        return f"""You are a precise knowledge assistant for OmniMind.
+
+RULES:
+- Answer ONLY using information from the provided context.
+- If the context does not contain the answer, say: "The uploaded data does not contain information about this topic."
+- Be concise, factual, and well-structured.
+- Do NOT fabricate facts or use knowledge outside the context.
 
 Context:
 {context}
@@ -40,7 +35,4 @@ Context:
 Question:
 {query}
 
-Answer:
-"""
-        for token in self.llm.stream(prompt):
-            yield token
+Answer:"""

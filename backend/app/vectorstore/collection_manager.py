@@ -1,55 +1,79 @@
-from backend.app.embeddings.embedding_model import EmbeddingModel
-from backend.app.vectorstore.chroma_client import get_chroma_client
+"""
+CollectionManager — facade over TextCollection + MultimodalCollection.
+
+Routes documents to the correct collection based on modality metadata:
+  - modality == "image" | "video"  → MultimodalCollection (CLIP 512-dim)
+  - everything else (documents)    → TextCollection (all-MiniLM 384-dim)
+
+All external code that used to import CollectionManager continues to work;
+only the routing internals have changed.
+"""
+
+from typing import List, Dict, Any
+
+from backend.app.vectorstore.text_collection import TextCollection
+from backend.app.vectorstore.multimodal_collection import MultimodalCollection
+
 
 class CollectionManager:
+    """Unified interface over both vector store collections."""
 
-    def __init__(self, collection_name: str = "aegis_collection"):
-        self.client = get_chroma_client()
-        self.collection_name = collection_name
-        self.embedding_model = EmbeddingModel()
+    def __init__(self):
+        self.text = TextCollection()
+        self.multimodal = MultimodalCollection()
 
-    def _get_collection(self):
-        return self.client.get_or_create_collection(
-            name=self.collection_name
-        )
+        # Expose names for backwards compat (e.g. clear-memory endpoint)
+        self.collection_name = "omnimind_text"
 
-    def add_documents(self, documents, ids, metadata):
-        collection = self._get_collection()
+    # ── Write ──────────────────────────────────────────────────────────────────
 
-        embeddings = self.embedding_model.embed_documents(documents)
+    def add_documents(
+        self,
+        documents: List[str],
+        ids: List[str],
+        metadata: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Route documents to the correct collection.
+        Modality is read from metadata[0] (all items in a batch share modality).
+        """
+        if not documents:
+            return
 
-        collection.add(
-            documents=documents,
-            embeddings=embeddings,
-            ids=ids,
-            metadatas=metadata
-        )
+        modality = (metadata[0] if metadata else {}).get("modality", "document")
 
-    def query(self, query_text, n_results=3):
-        collection = self._get_collection()
+        if modality in ("image", "video"):
+            if modality == "image":
+                # Single image at a time
+                self.multimodal.add_image(documents[0], ids[0], metadata[0])
+            else:
+                # Video segments batch
+                self.multimodal.add_video_segments(documents, ids, metadata)
+        else:
+            self.text.add_documents(documents, ids, metadata)
 
-        query_embedding = self.embedding_model.embed_query(query_text)
+    # ── Read ───────────────────────────────────────────────────────────────────
 
-        results = collection.query(
-            query_embeddings=query_embedding,
-            n_results=n_results
-        )
+    def query(self, query_text: str, n_results: int = 20) -> Dict[str, Any]:
+        """Dense semantic search over text collection (primary retrieval)."""
+        return self.text.semantic_query(query_text, n_results)
 
-        return results
+    def query_time_range(self, start_time: int, end_time: int) -> List[str]:
+        """Temporal video segment retrieval from multimodal collection."""
+        return self.multimodal.query_time_range(start_time, end_time)
 
-    def query_time_range(self, start_time, end_time):
-        collection = self._get_collection()
+    def get_all_text_documents(self) -> Dict[str, Any]:
+        """Return all text docs for BM25 index reconstruction."""
+        return self.text.get_all_documents()
 
-        results = collection.get(where={"modality": "video"})
+    # ── Delete ─────────────────────────────────────────────────────────────────
 
-        documents = results.get("documents", [])
-        metadatas = results.get("metadatas", [])
+    def clear_all(self) -> None:
+        """Wipe both collections."""
+        self.text.delete()
+        self.multimodal.delete()
 
-        filtered_docs = []
-
-        for doc, meta in zip(documents, metadatas):
-            if meta.get("start_time") is not None:
-                if meta["start_time"] <= end_time and meta["end_time"] >= start_time:
-                    filtered_docs.append(doc)
-
-        return filtered_docs
+    # Legacy helper kept for the /clear-memory endpoint
+    @property
+    def client(self):
+        return self.text.client

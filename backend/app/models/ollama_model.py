@@ -1,17 +1,27 @@
 from langchain_ollama import ChatOllama
+from backend.app.core.config import OLLAMA_MODEL, OLLAMA_TEMP, OLLAMA_MAX_PRED
 
 
 class OllamaModel:
+    """
+    Wrapper around Qwen2.5:7b via Ollama.
+    Ollama serves GGUF-quantized models (Q4_K_M by default), so all
+    inference is already quantized — num_gpu=99 ensures all layers
+    stay on the GPU for maximum throughput.
+    """
 
-    def __init__(self, model_name: str = "llama3"):
+    def __init__(self, model_name: str = OLLAMA_MODEL):
         self.llm = ChatOllama(
             model=model_name,
-            temperature=0.2,
-            num_predict=1500,
-            streaming=True
+            temperature=OLLAMA_TEMP,
+            num_predict=OLLAMA_MAX_PRED,
+            streaming=True,
+            num_gpu=99,          # push all GGUF layers to GPU
+            num_thread=8,        # CPU threads for non-GPU ops
+            repeat_penalty=1.1,  # reduce repetition
         )
 
-    def generate(self, prompt: str):
+    def generate(self, prompt: str) -> str:
         response = self.llm.invoke(prompt)
         return response.content
 

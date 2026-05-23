@@ -17,4 +17,19 @@ openpyxl
 opencv-python
 Pillow
 langchain
-langsmith
+langchain-ollama
+langchain-community
+langchain-text-splitters
+langchain-core>=0.2.0
+langchain-groq>=0.1.6
+langsmith>=0.1.77
+rank-bm25
+langgraph
+guardrails-ai
+open-clip-torch
+nltk
+# ── Evaluation ────────────────────────────────────────────────────────────────
+ragas>=0.1.7
+datasets>=2.14.0
+pandas>=2.0.0
+groq>=0.9.0

@@ -139,14 +139,14 @@ FastAPI StreamingResponse  →  Streamlit Frontend
 └──────┬──────────────┘
        │
 ┌──────▼──────────────────────────────────────────────────────────┐
-│                      Embedding Layer                              │
-│           all-MiniLM-L6-v2  ·  GPU Batch Encoding (CUDA)         │
+│                      Embedding Layer                            │
+│           all-MiniLM-L6-v2  ·  GPU Batch Encoding (CUDA)        │
 └────────────────────────────┬────────────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────────────┐
-│                     Vector Store  (ChromaDB)                      │
-│   Document Chunks · Image Descriptions · Video Segments           │
-│         Metadata:  modality · source · start_time · end_time      │
+│                     Vector Store  (ChromaDB)                    │
+│   Document Chunks · Image Descriptions · Video Segments         │
+│         Metadata:  modality · source · start_time · end_time    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

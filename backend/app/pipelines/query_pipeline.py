@@ -1,136 +1,231 @@
-import re
-from langsmith import traceable
+"""
+QueryPipeline — AEGIS v3.0 RAG orchestrator with full monitoring.
+
+Wraps the LangGraph workflow and integrates:
+  - AegisTracer for LangSmith monitoring
+  - RAGAS evaluation (async background or on-demand)
+  - Structured response with run_id, confidence, latency
+
+Streaming approach:
+  For /query-stream, we run guard → retrieve → context synchronously,
+  then stream generation tokens directly.
+"""
+
+from typing import Dict, Any, Generator
+
 from backend.app.vectorstore.collection_manager import CollectionManager
-from backend.app.rag.retriever import Retriever
+from backend.app.vectorstore.text_collection import TextCollection
+from backend.app.vectorstore.multimodal_collection import MultimodalCollection
+from backend.app.retrieval.bm25_store import BM25Store
+from backend.app.retrieval.reranker import CrossEncoderReranker
+from backend.app.retrieval.hybrid_retriever import HybridRetriever
 from backend.app.rag.context_builder import ContextBuilder
 from backend.app.rag.generator import Generator
 from backend.app.models.ollama_model import OllamaModel
-from backend.app.utils.time_utils import timestamp_to_seconds
+from backend.app.guardrails.input_guard import InputGuard
+from backend.app.guardrails.output_guard import OutputGuard
+from backend.app.workflow.graph import build_rag_graph
+from backend.app.workflow.nodes import _detect_time
+from backend.app.monitoring.langsmith_logger import tracer as aegis_tracer
 
 
 class QueryPipeline:
+    """
+    Main AEGIS RAG query orchestrator.
+    Constructed once at app startup; all components are reused per-request.
+    """
 
-    def __init__(self):
+    def __init__(self, bm25_store: BM25Store | None = None):
+        # ── Core components ───────────────────────────────────────────────────
         self.collection_manager = CollectionManager()
-        self.retriever = Retriever(self.collection_manager)
+        self.bm25 = bm25_store or BM25Store()
+        self.reranker = CrossEncoderReranker()
+        self.hybrid_retriever = HybridRetriever(
+            text_collection=self.collection_manager.text,
+            multimodal_collection=self.collection_manager.multimodal,
+            bm25_store=self.bm25,
+            reranker=self.reranker,
+        )
         self.context_builder = ContextBuilder()
         self.generator = Generator(OllamaModel())
 
-    def detect_time_query(self, query: str):
-        query = query.lower()
+        # ── Compile LangGraph ─────────────────────────────────────────────────
+        self._graph = build_rag_graph({
+            "collection_manager": self.collection_manager,
+            "hybrid_retriever":   self.hybrid_retriever,
+            "reranker":           self.reranker,
+            "generator":          self.generator,
+        })
 
-        hhmmss = re.findall(r"\d{2}:\d{2}:\d{2}", query)
-        seconds = re.findall(r"\b\d+\s*seconds?\b", query)
+    # ── Blocking query (POST /query) ──────────────────────────────────────────
 
-        first_match = re.search(r"first\s+(\d+)\s+seconds?", query)
-        between_match = re.search(r"between\s+(\d+)\s+and\s+(\d+)\s+seconds?", query)
+    def answer(self, query: str, top_k: int = 3, evaluate: bool = False) -> Dict[str, Any]:
+        """
+        Run full query pipeline synchronously.
 
-        return hhmmss, seconds, first_match, between_match
+        Args:
+            query:    User question
+            top_k:    Number of results to retrieve
+            evaluate: If True, run inline RAGAS evaluation (adds latency)
 
-    def handle_time_query(self, query, hhmmss, seconds):
-
-        if hhmmss:
-            times = [timestamp_to_seconds(t) for t in hhmmss]
-        else:
-            times = [int(re.findall(r"\d+", s)[0]) for s in seconds]
-
-        if len(times) == 1:
-            start_time = times[0] 
-            end_time = times[0]
-        else:
-            start_time = min(times)
-            end_time = max(times)
-
-        segments = self.collection_manager.query_time_range(start_time, end_time)
-
-        if not segments:
+        Returns structured response with answer, context, confidence, run_id.
+        """
+        # 1. Input validation
+        input_guard = InputGuard.validate(query)
+        if not input_guard.get("ok"):
             return {
-                "answer": "No video content found for that time range.",
-                "context_used": []
+                "answer":        input_guard.get("reason", "Query validation failed."),
+                "context_used":  [],
+                "warnings":      [input_guard.get("reason")],
+                "confidence":    0.0,
+                "grounded":      False,
+                "has_hallucination": False,
+                "error":         True,
+                "run_id":        None,
             }
 
-        context = "\n\n".join(segments)
+        # 2. Run full LangGraph workflow
+        try:
+            final_state = self._graph.invoke({"query": query})
+        except Exception as e:
+            return {
+                "answer":        f"Error processing query: {str(e)}",
+                "context_used":  [],
+                "warnings":      [f"Pipeline error: {str(e)}"],
+                "confidence":    0.0,
+                "grounded":      False,
+                "has_hallucination": False,
+                "error":         True,
+                "run_id":        None,
+            }
 
-        prompt = f"""
-You are analyzing a video segment.
+        # 3. Extract result from state
+        final_answer  = final_state.get("final_answer", "")
+        context_used  = final_state.get("reranked") or final_state.get("candidates", [])
+        context_used  = context_used if isinstance(context_used, list) else []
+        run_id        = final_state.get("run_id")
+        latency_ms    = final_state.get("latency_ms", {})
 
-The following descriptions correspond to video content between {start_time} and {end_time} seconds.
-
-Summarize clearly what is happening during that time window.
-
-Segments:
-{context}
-
-Answer:
-"""
-
-        answer = self.generator.llm.generate(prompt)
-
-        return {
-            "answer": answer,
-            "context_used": segments
+        response = {
+            "answer":            final_answer,
+            "context_used":      context_used,
+            "warnings":          final_state.get("warnings", []),
+            "confidence":        final_state.get("confidence", 0.5),
+            "grounded":          final_state.get("grounded", False),
+            "has_hallucination": final_state.get("has_hallucination", False),
+            "retrieval_metadata": final_state.get("retrieval_metadata", {}),
+            "latency_ms":        latency_ms,
+            "run_id":            run_id,
+            "error":             False,
         }
 
-    @traceable(name="rag_pipeline")
-    def answer(self, query: str, top_k: int = 3):
+        # 4. Optional inline RAGAS evaluation
+        if evaluate:
+            try:
+                from backend.app.evaluation.ragas_evaluator import AegisEvaluator
+                evaluator = AegisEvaluator()
+                eval_result = evaluator.evaluate_single(
+                    query=query,
+                    answer=final_answer,
+                    contexts=context_used if isinstance(context_used[0] if context_used else "", str) else [],
+                    run_id=run_id,
+                )
+                response["eval_scores"] = eval_result.to_dict()
+            except Exception:
+                pass   # Evaluation failure must not break the main response
 
-        hhmmss, seconds = self.detect_time_query(query)
+        return response
 
-        if hhmmss or seconds:
-            return self.handle_time_query(query, hhmmss, seconds)
+    # ── Streaming query (POST /query-stream) ──────────────────────────────────
 
-        chunks, metadata = self.retriever.retrieve(query, top_k)
+    def stream_answer(self, query: str) -> Generator[str, None, None]:
+        """
+        Run RAG pipeline with streaming generation and guardrails.
+        """
+        # 1. Input guard
+        guard = InputGuard.validate(query)
+        if not guard.get("ok"):
+            yield f"⚠️ {guard.get('reason', 'Query validation failed.')}\n"
+            return
 
-        context = self.context_builder.build(chunks)
+        if guard.get("warnings"):
+            for warning in guard["warnings"]:
+                yield f"ℹ️ {warning}\n"
 
-        answer = self.generator.generate(query, context)
+        # 2. Start LangSmith trace
+        run_id = aegis_tracer.start_run(query=query)
 
-        return {
-            "answer": answer,
-            "context_used": chunks
-        }
-    
-    def stream_answer(self, query: str):
+        # 3. Time-based vs semantic retrieval
+        time_range = _detect_time(query)
 
-        hhmmss, seconds, first_match, between_match = self.detect_time_query(query)
+        try:
+            if time_range:
+                segments = self.collection_manager.query_time_range(time_range["start"], time_range["end"])
+                if not segments:
+                    yield "No video content found for that time range."
+                    return
+                context = "\n\n".join(segments)
+            else:
+                retrieved = self.hybrid_retriever.retrieve_with_confidence(query)
+                if not retrieved:
+                    yield "No relevant context found in your uploaded data."
+                    return
 
-        if first_match:
-            start_time = 0
-            end_time = int(first_match.group(1))
-            segments = self.collection_manager.query_time_range(start_time, end_time)
+                # Log retrieval confidence headers
+                for i, result in enumerate(retrieved[:3], 1):
+                    confidence = result.get("relevance_score", 0.0)
+                    yield f"[Retrieved: {result.get('source', 'unknown')} ({confidence:.1%} confidence)]\n"
 
-            if not segments:
-                yield "No video content found for that time range."
-                return
+                chunks = [r["text"] for r in retrieved]
+                context = self.context_builder.build(chunks)
 
-            context = "\n\n".join(segments)
+                aegis_tracer.log_retrieval(
+                    run_id=run_id,
+                    bm25_hits=len([r for r in retrieved if r.get("source") == "text"]),
+                    dense_hits=len(retrieved),
+                    fused_count=len(chunks),
+                )
 
+        except Exception as e:
+            yield f"❌ Retrieval error: {str(e)}\n"
+            return
+
+        # 4. Stream generation tokens
+        full_answer = ""
+        try:
             for token in self.generator.stream_generate(query, context):
+                full_answer += token
                 yield token
+        except Exception as e:
+            yield f"\n\n❌ Generation error: {str(e)}\n"
             return
 
-        if between_match:
-            start_time = int(between_match.group(1))
-            end_time = int(between_match.group(2))
-            segments = self.collection_manager.query_time_range(start_time, end_time)
+        # 5. Output guard
+        output_validation = OutputGuard.validate(full_answer, context)
+        for warning in output_validation.get("warnings", []):
+            yield f"\n\n⚠️ {warning}"
 
-            if not segments:
-                yield "No video content found for that time range."
-                return
+        confidence = output_validation.get("confidence", 0.5)
+        yield f"\n\n[Response confidence: {confidence:.1%}]"
 
-            context = "\n\n".join(segments)
+        # 6. End LangSmith trace
+        aegis_tracer.log_generation(run_id=run_id, answer=full_answer)
+        aegis_tracer.log_guardrails(
+            run_id=run_id,
+            input_ok=True,
+            output_ok=output_validation.get("ok", True),
+            confidence=confidence,
+            grounded=output_validation.get("grounded", False),
+            has_hallucination=output_validation.get("has_hallucination", False),
+        )
+        aegis_tracer.end_run(run_id=run_id, final_answer=full_answer)
 
-            for token in self.generator.stream_generate(query, context):
-                yield token
-            return
+    # ── Monitoring helpers ────────────────────────────────────────────────────
 
-        if hhmmss or seconds:
-            result = self.handle_time_query(query, hhmmss, seconds)
-            yield result["answer"]
-            return
+    def get_retriever_stats(self) -> Dict[str, Any]:
+        """Get current retriever statistics for monitoring."""
+        return self.hybrid_retriever.get_stats()
 
-        chunks, metadata = self.retriever.retrieve(query, 3)
-        context = self.context_builder.build(chunks)
-
-        for token in self.generator.stream_generate(query, context):
-            yield token
+    def get_monitor_stats(self) -> Dict[str, Any]:
+        """Get LangSmith monitoring statistics."""
+        return aegis_tracer.get_run_stats()
