@@ -11,7 +11,7 @@ Streaming approach:
   then stream generation tokens directly.
 """
 
-from typing import Dict, Any, Generator
+from typing import Dict, Any, Generator as StreamGenerator
 
 from backend.app.vectorstore.collection_manager import CollectionManager
 from backend.app.vectorstore.text_collection import TextCollection
@@ -20,7 +20,7 @@ from backend.app.retrieval.bm25_store import BM25Store
 from backend.app.retrieval.reranker import CrossEncoderReranker
 from backend.app.retrieval.hybrid_retriever import HybridRetriever
 from backend.app.rag.context_builder import ContextBuilder
-from backend.app.rag.generator import Generator
+from backend.app.rag.generator import Generator as LLMGenerator
 from backend.app.models.ollama_model import OllamaModel
 from backend.app.guardrails.input_guard import InputGuard
 from backend.app.guardrails.output_guard import OutputGuard
@@ -47,7 +47,7 @@ class QueryPipeline:
             reranker=self.reranker,
         )
         self.context_builder = ContextBuilder()
-        self.generator = Generator(OllamaModel())
+        self.generator = LLMGenerator(OllamaModel())
 
         # ── Compile LangGraph ─────────────────────────────────────────────────
         self._graph = build_rag_graph({
@@ -138,7 +138,7 @@ class QueryPipeline:
 
     # ── Streaming query (POST /query-stream) ──────────────────────────────────
 
-    def stream_answer(self, query: str) -> Generator[str, None, None]:
+    def stream_answer(self, query: str) -> StreamGenerator[str, None, None]:
         """
         Run RAG pipeline with streaming generation and guardrails.
         """

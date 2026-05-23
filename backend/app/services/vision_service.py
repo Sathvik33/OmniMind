@@ -1,6 +1,14 @@
+import warnings
 import torch
 from PIL import Image
 from transformers import LlavaForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
+
+# Suppress cosmetic transformers warning about slow image processor during model load
+warnings.filterwarnings(
+    "ignore",
+    message=".*use_fast.*slow.*processor.*",
+    category=UserWarning,
+)
 
 
 class VisionService:

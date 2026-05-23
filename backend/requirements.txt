@@ -28,7 +28,6 @@ langgraph
 guardrails-ai
 open-clip-torch
 nltk
-# ── Evaluation ────────────────────────────────────────────────────────────────
 ragas>=0.1.7
 datasets>=2.14.0
 pandas>=2.0.0

@@ -46,7 +46,7 @@ _INJECTION_PATTERNS = [
 ]
 
 _SQL_PATTERNS = [
-    r"(\bselect\b|\bunion\b|\bdrop\b|\binsert\b|\bupdate\b|\bdelete\b|\bfrom\b).*(",
+    r"(\bselect\b|\bunion\b|\bdrop\b|\binsert\b|\bupdate\b|\bdelete\b|\bfrom\b)",
     r"''\s*or\s*'",
     r";\s*(select|insert|update|delete)",
 ]
