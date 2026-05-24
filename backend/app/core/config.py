@@ -38,6 +38,14 @@ OLLAMA_MAX_PRED = 1500
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama3-8b-8192")
 
+# ── Groq LLM (for RAG Generation — replaces local Ollama) ────────────────────
+GROQ_GENERATION_API_KEY   = os.getenv("GROQ_GENERATION_API_KEY", "")
+GROQ_GENERATION_MODEL     = os.getenv("GROQ_GENERATION_MODEL", "llama3-70b-8192")
+
+# ── Video Ingestion ───────────────────────────────────────────────────────────
+VIDEO_FRAME_INTERVAL_SEC    = int(os.getenv("VIDEO_FRAME_INTERVAL_SEC", "10"))   # sample 1 frame every N seconds
+VIDEO_SCENE_DIFF_THRESHOLD  = float(os.getenv("VIDEO_SCENE_DIFF_THRESHOLD", "8")) # skip near-duplicate frames
+
 # ── LangSmith Monitoring ───────────────────────────────────────────────────────
 LANGSMITH_API_KEY      = os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY", "")
 LANGSMITH_PROJECT      = os.getenv("LANGCHAIN_PROJECT", "Aegis")

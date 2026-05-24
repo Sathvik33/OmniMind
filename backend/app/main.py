@@ -10,7 +10,7 @@ from backend.app.api.video import router as video_router
 from backend.app.api.monitor import router as monitor_router
 from backend.app.api.evaluate import router as evaluate_router
 from backend.app.api.evaluate import set_pipeline
-from backend.app.services.vision_service import VisionService
+from backend.app.services.groq_vision_service import GroqVisionService
 from backend.app.retrieval.bm25_store import BM25Store
 from backend.app.vectorstore.text_collection import TextCollection
 from backend.app.monitoring.langsmith_logger import tracer as aegis_tracer
@@ -31,8 +31,8 @@ app.state.image_jobs = {}
 
 @app.on_event("startup")
 def startup():
-    # 1. Load LLaVA vision model (4-bit quantized) — loaded once, shared via app.state
-    app.state.vision_service = VisionService()
+    # 1. Initialize Groq Vision Service (cloud — no GPU load at startup)
+    app.state.vision_service = GroqVisionService()
 
     # 2. Load / rebuild BM25 index from persisted ChromaDB text collection
     bm25 = BM25Store()
@@ -78,8 +78,8 @@ def home():
             "evaluation":     "RAGAS — faithfulness, answer_relevancy, context_precision, context_recall",
         },
         "models": {
-            "llm":       "qwen2.5:7b (Ollama GGUF quantized)",
-            "vision":    "LLaVA-1.5-7B (4-bit NF4)",
+            "llm":       "llama3-70b-8192 (Groq cloud)",
+            "vision":    "llama-4-scout-17b (Groq vision API)",
             "embed":     "all-MiniLM-L6-v2 (text) + clip-ViT-B-32 (multimodal)",
             "rerank":    "cross-encoder/ms-marco-MiniLM-L-6-v2",
             "eval_llm":  "llama3-8b-8192 (Groq)",
