@@ -1,5 +1,6 @@
 *.pyc
 *.env
+.env
 /data
 *.pdf
 *.log
@@ -10,3 +11,4 @@
 chroma_db/
 *.bin
 *.sqlite3
+Tools.md

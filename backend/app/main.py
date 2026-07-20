@@ -14,6 +14,7 @@ from backend.app.services.groq_vision_service import GroqVisionService
 from backend.app.retrieval.bm25_store import BM25Store
 from backend.app.vectorstore.text_collection import TextCollection
 from backend.app.monitoring.langsmith_logger import tracer as aegis_tracer
+from backend.app.core.middleware import ObservabilityMiddleware
 
 app = FastAPI(
     title="AEGIS",
@@ -24,6 +25,8 @@ app = FastAPI(
     ),
     version="3.0.0",
 )
+
+app.add_middleware(ObservabilityMiddleware)
 
 app.state.video_jobs = {}
 app.state.image_jobs = {}
@@ -47,16 +50,15 @@ def startup():
     # 3. Initialize LangSmith tracer
     app.state.tracer = aegis_tracer
     if aegis_tracer.is_active():
-        print("✅ LangSmith monitoring active — project: Aegis")
+        print("LangSmith monitoring active — project: Aegis")
     else:
-        print("ℹ️  LangSmith monitoring in no-op mode (check LANGSMITH_API_KEY)")
+        print("LangSmith monitoring in no-op mode (check LANGSMITH_API_KEY)")
 
     # 4. Wire pipeline into evaluate router for live evaluation
     from backend.app.api.query import pipeline as query_pipeline
     set_pipeline(query_pipeline)
 
 
-# ── Routers ────────────────────────────────────────────────────────────────────
 app.include_router(health_router)
 app.include_router(upload_router)
 app.include_router(query_router)

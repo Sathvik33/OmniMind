@@ -27,11 +27,13 @@ class IngestionGuard:
     """Call validate_file() before saving any uploaded file to disk."""
 
     @staticmethod
-    def validate_file(filename: str, size_bytes: int) -> Dict[str, Any]:
+    def validate_file(filename: str, size_bytes: int, content_type: str = None) -> Dict[str, Any]:
         """
         Returns {"ok": True} on success.
         Returns {"ok": False, "reason": str} on failure.
         """
+        if content_type and content_type == "application/x-msdownload":
+            return {"ok": False, "reason": "Executable files are not allowed."}
         # Null byte injection
         if "\x00" in filename:
             return {"ok": False, "reason": "Filename contains null byte."}

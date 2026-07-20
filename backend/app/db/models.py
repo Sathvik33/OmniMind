@@ -1,0 +1,101 @@
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, JSON, Enum as SAEnum
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from pgvector.sqlalchemy import Vector
+import enum
+from .database import Base
+
+class ProcessingStatus(enum.Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    sessions = relationship("Session", back_populates="user")
+    artifacts = relationship("Artifact", back_populates="owner")
+
+class Session(Base):
+    __tablename__ = "sessions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User", back_populates="sessions")
+
+class Artifact(Base):
+    __tablename__ = "artifacts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=False) # MinIO path reference
+    modality = Column(String, nullable=False) # document, image, video, audio
+    upload_status = Column(SAEnum(ProcessingStatus), default=ProcessingStatus.COMPLETED)
+    processing_status = Column(SAEnum(ProcessingStatus), default=ProcessingStatus.QUEUED)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    owner = relationship("User", back_populates="artifacts")
+    metadata_entries = relationship("Metadata", back_populates="artifact", cascade="all, delete-orphan")
+    vectors = relationship("VectorEmbedding", back_populates="artifact", cascade="all, delete-orphan")
+
+class Metadata(Base):
+    __tablename__ = "artifact_metadata"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    artifact_id = Column(Integer, ForeignKey("artifacts.id"), nullable=False)
+    key = Column(String, index=True, nullable=False)
+    value = Column(JSON, nullable=False) # Allows storing bounding boxes, EXIF, temporal data
+    
+    artifact = relationship("Artifact", back_populates="metadata_entries")
+
+class VectorEmbedding(Base):
+    __tablename__ = "vector_embeddings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    artifact_id = Column(Integer, ForeignKey("artifacts.id"), nullable=False)
+    embedding_type = Column(String, index=True, nullable=False) # e.g., 'text', 'vision', 'ocr', 'summary'
+    content = Column(Text, nullable=True) # Raw text chunk if applicable
+    embedding = Column(Vector(1024)) # Note: Adjust dimensions based on model (BGE-M3 is 1024, SigLIP2 can vary)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    artifact = relationship("Artifact", back_populates="vectors")
+
+class IngestionJob(Base):
+    __tablename__ = "ingestion_jobs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    artifact_id = Column(Integer, ForeignKey("artifacts.id"), nullable=False)
+    status = Column(SAEnum(ProcessingStatus), default=ProcessingStatus.QUEUED)
+    retry_count = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    artifact = relationship("Artifact", backref="jobs")
+
+class ModelCategory(enum.Enum):
+    EMBEDDING = "embedding"
+    PARSER = "parser"
+    VISION = "vision"
+    LLM = "llm"
+    RERANKER = "reranker"
+
+class AIModelRegistry(Base):
+    __tablename__ = "ai_model_registry"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True, nullable=False)
+    version = Column(String, nullable=False)
+    category = Column(SAEnum(ModelCategory), nullable=False)
+    is_active = Column(Integer, default=1) # 1 for active, 0 for inactive
+    config = Column(JSON, nullable=True) # Dimensions, API keys, endpoints
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
