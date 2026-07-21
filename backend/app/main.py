@@ -10,6 +10,7 @@ from backend.app.api.video import router as video_router
 from backend.app.api.monitor import router as monitor_router
 from backend.app.api.evaluate import router as evaluate_router
 from backend.app.api.evaluate import set_pipeline
+from backend.app.api.feedback import router as feedback_router
 from backend.app.services.groq_vision_service import GroqVisionService
 from backend.app.retrieval.bm25_store import BM25Store
 from backend.app.vectorstore.text_collection import TextCollection
@@ -66,6 +67,7 @@ app.include_router(image_router)
 app.include_router(video_router)
 app.include_router(monitor_router)
 app.include_router(evaluate_router)
+app.include_router(feedback_router)
 
 
 @app.get("/")

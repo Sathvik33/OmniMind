@@ -29,6 +29,35 @@ class Session(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     user = relationship("User", back_populates="sessions")
+    messages = relationship("ChatHistory", back_populates="session", cascade="all, delete-orphan")
+
+class ChatRole(enum.Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+class ChatHistory(Base):
+    __tablename__ = "chat_history"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False)
+    role = Column(SAEnum(ChatRole), nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    session = relationship("Session", back_populates="messages")
+    feedbacks = relationship("UserFeedback", back_populates="message", cascade="all, delete-orphan")
+
+class UserFeedback(Base):
+    __tablename__ = "user_feedback"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(Integer, ForeignKey("chat_history.id"), nullable=False)
+    rating = Column(Integer, nullable=False) # e.g., 1 for thumbs up, -1 for thumbs down
+    comment = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    message = relationship("ChatHistory", back_populates="feedbacks")
 
 class Artifact(Base):
     __tablename__ = "artifacts"

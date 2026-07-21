@@ -11,10 +11,14 @@ config = context.config
 
 import os
 from dotenv import load_dotenv
-load_dotenv()
+# Explicitly load the root .env file
+root_env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
+load_dotenv(dotenv_path=root_env_path, override=True)
 db_url = os.environ.get("DATABASE_URL")
 if db_url:
-    config.set_main_option("sqlalchemy.url", db_url)
+    # Escape % signs so Alembic's ConfigParser doesn't treat them as interpolation strings
+    db_url_escaped = db_url.replace('%', '%%')
+    config.set_main_option("sqlalchemy.url", db_url_escaped)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

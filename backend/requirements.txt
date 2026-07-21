@@ -39,3 +39,6 @@ pgvector
 minio
 celery
 redis
+langgraph
+langchain
+langchain_core
