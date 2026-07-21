@@ -21,7 +21,8 @@ from backend.app.retrieval.reranker import CrossEncoderReranker
 from backend.app.retrieval.hybrid_retriever import HybridRetriever
 from backend.app.rag.context_builder import ContextBuilder
 from backend.app.rag.generator import Generator as LLMGenerator
-from backend.app.models.groq_model import GroqModel
+# from backend.app.models.groq_model import GroqModel
+from backend.app.models.ollama_model import OllamaModel
 from backend.app.guardrails.input_guard import InputGuard
 from backend.app.guardrails.output_guard import OutputGuard
 from backend.app.workflow.graph import build_rag_graph
@@ -47,7 +48,8 @@ class QueryPipeline:
             reranker=self.reranker,
         )
         self.context_builder = ContextBuilder()
-        self.generator = LLMGenerator(GroqModel())
+        # self.generator = LLMGenerator(GroqModel())
+        self.generator = LLMGenerator(OllamaModel(model_name="qwen2.5:7b"))
 
         # ── Compile LangGraph ─────────────────────────────────────────────────
         self._graph = build_rag_graph({
