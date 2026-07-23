@@ -44,3 +44,4 @@ langchain
 langchain_core
 ollama
 langchain_ollama
+llama-index-core

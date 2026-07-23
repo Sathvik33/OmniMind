@@ -41,21 +41,90 @@ class MultimodalIngestionPipeline:
             db.close()
 
     def _process_document(self, db, artifact, file_path):
-        parsed = parsing_service.parse_document(file_path, original_filename=artifact.filename)
-        chunks = self.chunker.chunk(parsed.get("text", ""))
+        import re
+        from backend.app.models.vision_llm import VisionLLM
+        from backend.app.ingestion.chunking.markdown_chunker import MarkdownHierarchicalChunker
+        import shutil
         
-        for chunk in chunks:
-            if not chunk.strip():
+        # 1. Parse PDF using LiteParse
+        parsed = parsing_service.parse_document(file_path, original_filename=artifact.filename)
+        md_path = parsed.get("markdown_path")
+        images_dir = parsed.get("images_dir")
+        
+        if not md_path or not os.path.exists(md_path):
+            raise ValueError("Markdown generation failed.")
+            
+        with open(md_path, "r", encoding="utf-8") as f:
+            markdown_content = f.read()
+            
+        # 3 & 4. Image Understanding & Merge
+        if images_dir and os.path.exists(images_dir):
+            vision_llm = VisionLLM()
+            
+            # Find all markdown images: ![](path/to/image.png) or ![alt](path/to/image.png)
+            # We use a regex replacement function to swap them out
+            def replace_image(match):
+                alt_text = match.group(1)
+                img_rel_path = match.group(2)
+                
+                # Resolve actual image path
+                img_filename = os.path.basename(img_rel_path)
+                full_img_path = os.path.join(images_dir, img_filename)
+                
+                if os.path.exists(full_img_path):
+                    try:
+                        desc_json = vision_llm.describe_image(full_img_path)
+                        # Format into a nice markdown block
+                        desc_md = f"\n\n**Figure Description ({img_filename}):**\n"
+                        desc_md += f"- **Type**: {desc_json.get('image_type', 'Unknown')}\n"
+                        desc_md += f"- **Topic**: {desc_json.get('topic', '')}\n"
+                        desc_md += f"- **Description**: {desc_json.get('description', '')}\n"
+                        if desc_json.get('ocr_text'):
+                            desc_md += f"- **Visible Text**: {', '.join(desc_json.get('ocr_text', []))}\n"
+                        desc_md += "\n"
+                        return desc_md
+                    except Exception as e:
+                        print(f"Failed to describe image {img_filename}: {e}")
+                        return match.group(0) # fallback to original
+                else:
+                    return match.group(0)
+
+            markdown_content = re.sub(r'!\[(.*?)\]\((.*?)\)', replace_image, markdown_content)
+            
+        # 5. Sentence-aware Chunking
+        chunker = MarkdownHierarchicalChunker()
+        chunks = chunker.chunk(markdown_content, artifact_name=artifact.filename)
+        
+        # 6 & 7. Metadata and Embedding
+        for chunk_data in chunks:
+            text = chunk_data["text"]
+            if not text.strip():
                 continue
-            embedding = embedding_service.embed_text(chunk)
+                
+            # Prepend metadata to the content to enrich the embedding
+            meta = chunk_data["metadata"]
+            enriched_text = (
+                f"[Document: {meta.get('document_name')}]\n"
+                f"[Hierarchy: {meta.get('hierarchy')}]\n"
+                f"[Contains Table: {meta.get('contains_table')}]\n"
+                f"[Contains Image: {meta.get('contains_image')}]\n"
+                f"\n{text}"
+            )
+            
+            embedding = embedding_service.embed_text(enriched_text)
             vec = VectorEmbedding(
                 artifact_id=artifact.id,
                 embedding_type="text",
-                content=chunk,
+                content=enriched_text,
                 embedding=embedding
             )
             db.add(vec)
+            
         db.commit()
+        
+        # Cleanup output dir
+        output_dir = os.path.dirname(md_path)
+        shutil.rmtree(output_dir, ignore_errors=True)
 
     def _process_image(self, db, artifact, file_path):
         # Placeholder for Object Detection (e.g., Florence-2)

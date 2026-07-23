@@ -35,19 +35,56 @@ class DocumentParsingService:
             return self._run_liteparse(file_path, original_filename) # fallback
 
     def _run_liteparse(self, file_path: str, original_filename: str) -> Dict[str, Any]:
-        text_content = ""
-        try:
-            if original_filename.lower().endswith('.pdf'):
-                import fitz
-                with fitz.open(file_path) as doc:
-                    text_content = chr(10).join([page.get_text() for page in doc])
-            else:
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    text_content = f.read()
-        except Exception as e:
-            text_content = f"Error parsing document {original_filename}: {e}"
+        import subprocess
+        import tempfile
+        import shutil
+        
+        # Create a unique output directory in the project root
+        base_dir = os.path.join(os.getcwd(), "output")
+        os.makedirs(base_dir, exist_ok=True)
+        
+        # Use a temporary directory inside output to avoid collisions
+        out_dir = tempfile.mkdtemp(dir=base_dir, prefix="liteparse_")
+        
+        md_path = os.path.join(out_dir, "document.md")
+        json_path = os.path.join(out_dir, "document.json")
+        images_dir = os.path.join(out_dir, "images")
+        
+        if original_filename.lower().endswith('.pdf'):
+            try:
+                # 1. Generate JSON
+                subprocess.run(
+                    ["lit", "parse", file_path, "--format", "json", "-o", json_path],
+                    check=True, capture_output=True
+                )
+                
+                # 2. Generate Markdown & Images
+                subprocess.run(
+                    ["lit", "parse", file_path, "--format", "markdown", "--image-mode", "embed", "--image-output-dir", images_dir, "-o", md_path],
+                    check=True, capture_output=True
+                )
+                
+                return {
+                    "markdown_path": md_path,
+                    "json_path": json_path,
+                    "images_dir": images_dir
+                }
+            except subprocess.CalledProcessError as e:
+                error_msg = e.stderr.decode('utf-8') if e.stderr else str(e)
+                raise RuntimeError(f"LiteParse CLI failed: {error_msg}")
+        else:
+            # Fallback for non-PDFs
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                text_content = f.read()
             
-        return {"text": text_content, "metadata": {}}
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(text_content)
+                
+            return {
+                "markdown_path": md_path,
+                "json_path": None,
+                "images_dir": None
+            }
 
     def _run_docling(self, file_path: str) -> Dict[str, Any]:
         # TODO: Implement advanced structure-aware parsing
