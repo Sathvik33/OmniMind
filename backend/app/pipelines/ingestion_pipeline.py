@@ -75,7 +75,7 @@ class MultimodalIngestionPipeline:
                     try:
                         desc_json = vision_llm.describe_image(full_img_path)
                         # Format into a nice markdown block
-                        desc_md = f"\n\n**Figure Description ({img_filename}):**\n"
+                        desc_md = f"\n\n<!-- image: true -->\n**Figure Description ({img_filename}):**\n"
                         desc_md += f"- **Type**: {desc_json.get('image_type', 'Unknown')}\n"
                         desc_md += f"- **Topic**: {desc_json.get('topic', '')}\n"
                         desc_md += f"- **Description**: {desc_json.get('description', '')}\n"

@@ -1,3 +1,4 @@
+import re
 from typing import List, Dict, Any
 from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
 from llama_index.core import Document
@@ -10,9 +11,8 @@ class MarkdownHierarchicalChunker:
     """
     
     def __init__(self, target_tokens: int = 600, overlap_tokens: int = 60):
-        # We approximate tokens as 0.75 words for simplicity without relying on tiktoken
-        self.chunk_size = int(target_tokens * 0.75)
-        self.chunk_overlap = int(overlap_tokens * 0.75)
+        self.chunk_size = target_tokens
+        self.chunk_overlap = overlap_tokens
         
         self.md_parser = MarkdownNodeParser()
         self.sent_splitter = SentenceSplitter(
@@ -28,7 +28,7 @@ class MarkdownHierarchicalChunker:
         md_nodes = self.md_parser.get_nodes_from_documents([doc])
         
         # 3. Split by sentences within those nodes
-        final_nodes = self.sent_splitter.get_nodes_from_documents(md_nodes)
+        final_nodes = self.sent_splitter.get_nodes_from_nodes(md_nodes)
         
         chunks = []
         for node in final_nodes:
@@ -46,9 +46,11 @@ class MarkdownHierarchicalChunker:
             
             hierarchy_str = " > ".join(headers) if headers else "Document Root"
             
-            # Simple heuristic flags
-            contains_table = "|" in text and "-|-" in text
-            contains_image = "**Figure Description" in text
+            # Robust table detection: Markdown tables or HTML tables
+            contains_table = bool(
+                re.search(r'\|.*\|', text) and re.search(r'[-:]+[-| :]*', text)
+            ) or "<table" in text.lower()
+            contains_image = "<!-- image: true -->" in text
             
             chunks.append({
                 "text": text,
