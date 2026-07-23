@@ -41,7 +41,7 @@ class MultimodalIngestionPipeline:
             db.close()
 
     def _process_document(self, db, artifact, file_path):
-        parsed = parsing_service.parse_document(file_path)
+        parsed = parsing_service.parse_document(file_path, original_filename=artifact.filename)
         chunks = self.chunker.chunk(parsed.get("text", ""))
         
         for chunk in chunks:
@@ -70,6 +70,7 @@ class MultimodalIngestionPipeline:
         vec = VectorEmbedding(
             artifact_id=artifact.id,
             embedding_type="vision",
+            content=f"[Image File: {artifact.filename}]",
             embedding=embedding
         )
         db.add(vec)

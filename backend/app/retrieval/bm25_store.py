@@ -7,7 +7,7 @@ Uses: langchain_community.retrievers.BM25Retriever
 Why LangChain instead of raw rank_bm25?
 - Fits the LangChain Document ecosystem (used by EnsembleRetriever)
 - Consistent interface across all retrievers
-- Persistence: index rebuilt from ChromaDB snapshot at startup
+- Persistence: index rebuilt from PostgreSQL snapshot at startup
 
 RRF fusion is handled by LangChain's EnsembleRetriever (see hybrid_retriever.py).
 """
@@ -26,7 +26,7 @@ class BM25Store:
     """
     Thin wrapper around LangChain's BM25Retriever with disk persistence.
 
-    Rebuilds from ChromaDB text collection documents on first startup
+    Rebuilds from PostgreSQL text collection documents on first startup
     or after a clear-memory operation.
     """
 
@@ -78,20 +78,20 @@ class BM25Store:
             self._retriever = BM25Retriever.from_documents(self._docs)
         self._save()
 
-    def rebuild_from_collection(self, all_docs: Dict[str, Any]) -> None:
+    def rebuild_from_postgres(self, db: Any) -> None:
         """
-        Full rebuild from ChromaDB snapshot (called on startup or after clear).
-        `all_docs` is the return value of TextCollection.get_all_documents().
+        Full rebuild from PostgreSQL snapshot (called on startup or after clear).
         """
-        texts = all_docs.get("documents") or []
-        metas = all_docs.get("metadatas") or [{} for _ in texts]
-
+        from sqlalchemy import text
+        results = db.execute(text("SELECT content FROM vector_embeddings WHERE embedding_type = 'text'")).fetchall()
+        texts = [row.content for row in results if row.content]
+        
         if not texts:
             return
 
         self._docs = [
-            Document(page_content=t, metadata=m)
-            for t, m in zip(texts, metas)
+            Document(page_content=t, metadata={})
+            for t in texts
         ]
         self._retriever = BM25Retriever.from_documents(self._docs)
         self._save()

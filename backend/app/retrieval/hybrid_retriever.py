@@ -13,8 +13,7 @@ No LangChain dependencies - pure Python + sentence-transformers.
 
 from typing import List, Dict, Any
 
-from backend.app.vectorstore.text_collection import TextCollection
-from backend.app.vectorstore.multimodal_collection import MultimodalCollection
+from backend.app.retrieval.pgvector_store import PgVectorStore
 from backend.app.retrieval.bm25_store import BM25Store
 from backend.app.retrieval.reranker import CrossEncoderReranker
 from backend.app.core.config import RETRIEVAL_TOP_K, RERANKER_TOP_K, RRF_K
@@ -77,13 +76,10 @@ class HybridRetriever:
 
     def __init__(
         self,
-        text_collection: TextCollection,
-        multimodal_collection: MultimodalCollection,
         bm25_store: BM25Store,
         reranker: CrossEncoderReranker,
     ):
-        self.text_col = text_collection
-        self.modal_col = multimodal_collection
+        self.pg_store = PgVectorStore()
         self.reranker = reranker
         self.bm25_store = bm25_store
 
@@ -129,14 +125,13 @@ class HybridRetriever:
             except Exception:
                 bm25_results = []
 
-        # 2. Dense Semantic Search (embedding-based via ChromaDB)
+        # 2. Dense Semantic Search (embedding-based via pgvector)
         dense_results = []
         try:
-            dense_results_obj = self.text_col.semantic_query(query, n_results=top_k)
-            dense_docs = dense_results_obj.get("documents", [[]])[0] or []
-            dense_results = dense_docs
+            pg_res = self.pg_store.search(query, top_k=top_k)
+            dense_results = [r["content"] for r in pg_res]
         except Exception:
-            dense_results = []
+            pass
 
         # 3. RRF Fusion (combine rank positions)
         if bm25_results and dense_results:
@@ -156,21 +151,19 @@ class HybridRetriever:
             else []
         )
 
-        # 5. CLIP multimodal cross-modal retrieval
-        modal_results = {}
+        # 5. CLIP multimodal cross-modal retrieval via pgvector
+        modal_texts = []
         try:
-            modal_results = self.modal_col.query_by_text(query, n_results=max(2, final_k // 2))
+            modal_res = self.pg_store.search(query, modality="image", embedding_type="vision", top_k=max(2, final_k // 2))
+            modal_texts = [r["content"] for r in modal_res if r.get("content")]
         except Exception:
-            modal_results = {"documents": [[]], "metadatas": [[]]}
-
-        modal_texts = modal_results.get("documents", [[]])[0] or []
-        modal_metadata = modal_results.get("metadatas", [[]])[0] or []
+            pass
 
         # 6. Merge results with deduplication
         seen_texts = {doc for doc, _ in reranked_with_scores}
         merged_results = list(reranked_with_scores)
 
-        for modal_text, modal_meta in zip(modal_texts, modal_metadata):
+        for modal_text in modal_texts:
             if modal_text not in seen_texts and len(merged_results) < final_k + len(modal_texts):
                 # Multimodal results get slightly lower confidence
                 merged_results.append((modal_text, 0.7))

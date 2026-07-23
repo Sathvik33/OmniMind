@@ -129,7 +129,12 @@ def make_temporal_retrieve(collection_manager):
     def temporal_retrieve(state: OmniMindState) -> Dict[str, Any]:
         t0 = time.perf_counter()
         tr = state.get("time_range") or {"start": 0, "end": 0}
-        segments = collection_manager.query_time_range(tr["start"], tr["end"])
+        segments = []
+        if collection_manager:
+            try:
+                segments = collection_manager.query_time_range(tr["start"], tr["end"])
+            except Exception:
+                pass
 
         latency = state.get("latency_ms", {})
         latency["temporal_retrieve"] = _ms(t0)

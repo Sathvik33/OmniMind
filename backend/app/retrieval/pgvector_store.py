@@ -4,8 +4,10 @@ from sqlalchemy import text
 from backend.app.db.models import VectorEmbedding, Artifact, Metadata
 from backend.app.services.embedding_service import embedding_service
 
+from backend.app.db.database import SessionLocal
+
 class PgVectorStore:
-    def __init__(self, db: Session):
+    def __init__(self, db: Optional[Session] = None):
         self.db = db
 
     def search(
@@ -19,11 +21,12 @@ class PgVectorStore:
         """
         Executes a dense vector search with SQL metadata pre-filtering.
         """
-        # 1. Embed Query
         if embedding_type == "text":
             query_embedding = embedding_service.embed_text(query)
+        elif embedding_type == "vision":
+            query_embedding = embedding_service.embed_query_for_vision(query)
         else:
-            query_embedding = embedding_service.embed_image(query) # Path for image-to-image or text-to-image
+            raise ValueError(f"Unsupported embedding type: {embedding_type}")
 
         # 2. Build Base Query String
         # We use pgvector's cosine distance operator <=> 
@@ -56,7 +59,12 @@ class PgVectorStore:
         params["top_k"] = top_k
 
         # 4. Execute Query
-        results = self.db.execute(text(sql), params).fetchall()
+        session = self.db or SessionLocal()
+        try:
+            results = session.execute(text(sql), params).fetchall()
+        finally:
+            if not self.db:
+                session.close()
 
         # 5. Format Results
         formatted = []

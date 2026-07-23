@@ -42,3 +42,5 @@ redis
 langgraph
 langchain
 langchain_core
+ollama
+langchain_ollama

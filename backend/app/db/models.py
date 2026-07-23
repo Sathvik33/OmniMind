@@ -93,7 +93,7 @@ class VectorEmbedding(Base):
     artifact_id = Column(Integer, ForeignKey("artifacts.id"), nullable=False)
     embedding_type = Column(String, index=True, nullable=False) # e.g., 'text', 'vision', 'ocr', 'summary'
     content = Column(Text, nullable=True) # Raw text chunk if applicable
-    embedding = Column(Vector(1024)) # Note: Adjust dimensions based on model (BGE-M3 is 1024, SigLIP2 can vary)
+    embedding = Column(Vector()) # Unbounded dimension to support both BGE-M3 (1024) and SigLIP2 (768)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     artifact = relationship("Artifact", back_populates="vectors")

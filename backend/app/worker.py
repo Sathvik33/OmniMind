@@ -4,6 +4,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Bypass SSL proxy for Hugging Face downloads
+os.environ["CURL_CA_BUNDLE"] = ""
+os.environ["REQUESTS_CA_BUNDLE"] = ""
+
 REDIS_URL = os.getenv("CELERY_BROKER_URL")
 if not REDIS_URL:
     raise ValueError("CELERY_BROKER_URL environment variable is not set")

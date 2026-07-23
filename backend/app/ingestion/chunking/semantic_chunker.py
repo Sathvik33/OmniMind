@@ -23,7 +23,7 @@ class SemanticChunker:
 
     Strategy:
         1. Split text → sentences (regex, no NLTK dependency)
-        2. GPU-batch encode all sentences via all-MiniLM-L6-v2
+        2. GPU-batch encode all sentences via BAAI/bge-m3
         3. Walk pairs; accumulate until similarity < threshold OR max reached
         4. Enforce min size to avoid micro-chunks
         5. Fall back to raw text for very short inputs
@@ -34,7 +34,7 @@ class SemanticChunker:
         similarity_threshold: float = SEMANTIC_THRESHOLD,
         min_sentences: int = MIN_CHUNK_SENTENCES,
         max_sentences: int = MAX_CHUNK_SENTENCES,
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: str = "BAAI/bge-m3",
     ):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = SentenceTransformer(model_name, device=device)

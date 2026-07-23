@@ -17,7 +17,7 @@ from sentence_transformers import CrossEncoder
 
 from backend.app.core.config import RERANKER_TOP_K
 
-_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
 
 
 class CrossEncoderReranker:

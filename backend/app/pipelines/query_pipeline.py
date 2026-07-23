@@ -13,9 +13,7 @@ Streaming approach:
 
 from typing import Dict, Any, Generator as StreamGenerator
 
-from backend.app.vectorstore.collection_manager import CollectionManager
-from backend.app.vectorstore.text_collection import TextCollection
-from backend.app.vectorstore.multimodal_collection import MultimodalCollection
+
 from backend.app.retrieval.bm25_store import BM25Store
 from backend.app.retrieval.reranker import CrossEncoderReranker
 from backend.app.retrieval.hybrid_retriever import HybridRetriever
@@ -38,12 +36,10 @@ class QueryPipeline:
 
     def __init__(self, bm25_store: BM25Store | None = None):
         # ── Core components ───────────────────────────────────────────────────
-        self.collection_manager = CollectionManager()
+        self.collection_manager = None
         self.bm25 = bm25_store or BM25Store()
         self.reranker = CrossEncoderReranker()
         self.hybrid_retriever = HybridRetriever(
-            text_collection=self.collection_manager.text,
-            multimodal_collection=self.collection_manager.multimodal,
             bm25_store=self.bm25,
             reranker=self.reranker,
         )
