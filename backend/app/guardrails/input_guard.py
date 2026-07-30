@@ -46,9 +46,9 @@ _INJECTION_PATTERNS = [
 ]
 
 _SQL_PATTERNS = [
-    r"(\bselect\b|\bunion\b|\bdrop\b|\binsert\b|\bupdate\b|\bdelete\b|\bfrom\b)",
-    r"''\s*or\s*'",
-    r";\s*(select|insert|update|delete)",
+    r"\b(select|insert|update|delete|drop|union)\b\s+[\s\S]*\b(from|into|table|where)\b",
+    r"''\s*or\s*['\d=]",
+    r";\s*(select|insert|update|delete|drop|truncate)",
 ]
 
 _CMD_PATTERNS = [
@@ -71,9 +71,10 @@ _CMD_RE = re.compile("|".join(_CMD_PATTERNS), re.IGNORECASE)
 
 _HARMFUL_KEYWORDS = {
     "hack", "crack", "exploit", "malware", "virus", "ddos", "ransomware",
-    "phishing", "spyware", "trojan", "worm", "botnet", "c2", "payload",
-    "shellcode", "overflow", "buffer", "pivot", "lateral movement",
+    "phishing", "spyware", "trojan", "worm", "botnet", "c2", "shellcode",
+    "lateral movement",
 }
+
 
 _SEMANTIC_PATTERNS = [
     r"what\s+",

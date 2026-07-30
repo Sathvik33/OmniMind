@@ -6,7 +6,8 @@ Production strategy:
   2. Scene-change detection via pixel diff (skip near-duplicate frames)
   3. Describe each keyframe using GroqVisionService (cloud, fast)
   4. Merge consecutive identical-scene segments to reduce redundancy
-  5. Store in BOTH text + multimodal ChromaDB collections
+  5. Store in PostgreSQL vector_embeddings table (text + vision embeddings)
+
 
 Why 10s intervals?
   - 2s = 30 API calls/minute for a 1-min video → rate limits + slow

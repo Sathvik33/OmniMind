@@ -1,21 +1,18 @@
-import os
 from celery import Celery
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Bypass SSL proxy for Hugging Face downloads
-os.environ["CURL_CA_BUNDLE"] = ""
-os.environ["REQUESTS_CA_BUNDLE"] = ""
+from kombu import Queue
+from backend.app.core.config import REDIS_BROKER_URL
 
-REDIS_URL = os.getenv("CELERY_BROKER_URL")
-if not REDIS_URL:
+if not REDIS_BROKER_URL:
     raise ValueError("CELERY_BROKER_URL environment variable is not set")
 
 celery_app = Celery(
     "worker",
-    broker=REDIS_URL,
-    backend=REDIS_URL,
+    broker=REDIS_BROKER_URL,
+    backend=REDIS_BROKER_URL,
     include=["backend.app.tasks.ingestion_tasks"]
 )
 
@@ -26,4 +23,13 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
+    task_default_queue="ingestion_queue",
+    task_queues=(
+        Queue("ingestion_queue", routing_key="ingestion.#"),
+    ),
+    task_routes={
+        "backend.app.tasks.ingestion_tasks.process_ingestion_task": {"queue": "ingestion_queue", "routing_key": "ingestion.task"},
+        "backend.app.tasks.ingestion_tasks.cleanup_stuck_jobs": {"queue": "ingestion_queue", "routing_key": "ingestion.cleanup"},
+    },
 )
+

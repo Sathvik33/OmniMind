@@ -8,8 +8,14 @@ from .database import Base
 class ProcessingStatus(enum.Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    PARSING = "parsing"
+    VISION_CAPTIONING = "vision_captioning"
+    CHUNKING_EMBEDDING = "chunking_embedding"
+    STORING = "storing"
     COMPLETED = "completed"
     FAILED = "failed"
+    DEAD_LETTER = "dead_letter"
+
 
 class User(Base):
     __tablename__ = "users"
@@ -67,8 +73,8 @@ class Artifact(Base):
     filename = Column(String, nullable=False)
     file_path = Column(String, nullable=False) # MinIO path reference
     modality = Column(String, nullable=False) # document, image, video, audio
-    upload_status = Column(SAEnum(ProcessingStatus), default=ProcessingStatus.COMPLETED)
-    processing_status = Column(SAEnum(ProcessingStatus), default=ProcessingStatus.QUEUED)
+    upload_status = Column(SAEnum(ProcessingStatus, values_callable=lambda x: [e.value for e in x]), default=ProcessingStatus.COMPLETED)
+    processing_status = Column(SAEnum(ProcessingStatus, values_callable=lambda x: [e.value for e in x]), default=ProcessingStatus.QUEUED)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
@@ -103,13 +109,19 @@ class IngestionJob(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     artifact_id = Column(Integer, ForeignKey("artifacts.id"), nullable=False)
-    status = Column(SAEnum(ProcessingStatus), default=ProcessingStatus.QUEUED)
+    status = Column(SAEnum(ProcessingStatus, values_callable=lambda x: [e.value for e in x]), default=ProcessingStatus.QUEUED)
+
     retry_count = Column(Integer, default=0)
+    failed_stage = Column(String, nullable=True)
     error_message = Column(Text, nullable=True)
+    traceback = Column(Text, nullable=True)
+    is_retryable = Column(Integer, default=1)
+    last_heartbeat = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     artifact = relationship("Artifact", backref="jobs")
+
 
 class ModelCategory(enum.Enum):
     EMBEDDING = "embedding"

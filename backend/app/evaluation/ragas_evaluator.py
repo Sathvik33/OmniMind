@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama3-8b-8192")
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 RAGAS_THRESHOLD = float(os.getenv("RAGAS_EVALUATION_THRESHOLD", "0.5"))
+
 
 # ── Optional imports (graceful fallback) ──────────────────────────────────────
 try:
@@ -128,19 +129,46 @@ class AegisEvaluator:
             )
             self._llm = LangchainLLMWrapper(groq_chat)
 
-            # Wire the LLM into RAGAS metrics
-            faithfulness.llm        = self._llm
-            answer_relevancy.llm    = self._llm
-            context_precision.llm   = self._llm
-            context_recall.llm      = self._llm
+            # Create isolated metric instances (avoid mutating module-level singletons)
+            from ragas.metrics import Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
+            _faithfulness = Faithfulness()
+            _answer_relevancy = AnswerRelevancy()
+            _context_precision = ContextPrecision()
+            _context_recall = ContextRecall()
 
-            self._metrics_no_gt   = [faithfulness, answer_relevancy, context_precision]
-            self._metrics_with_gt = [faithfulness, answer_relevancy, context_precision, context_recall]
+            # Wire the LLM into each metric instance
+            _faithfulness.llm        = self._llm
+            _answer_relevancy.llm    = self._llm
+            _context_precision.llm   = self._llm
+            _context_recall.llm      = self._llm
+
+            # Wire local embeddings into RAGAS metrics to eliminate OpenAI API key requirement
+            try:
+                try:
+                    from ragas.embeddings import HuggingFaceEmbeddings as RagasHuggingFaceEmbeddings
+                    ragas_embeddings = RagasHuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+                except Exception:
+                    from ragas.embeddings import LangchainEmbeddingsWrapper
+                    from langchain_community.embeddings import HuggingFaceEmbeddings
+                    hf_emb = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+                    ragas_embeddings = LangchainEmbeddingsWrapper(hf_emb)
+
+                _faithfulness.embeddings        = ragas_embeddings
+                _answer_relevancy.embeddings    = ragas_embeddings
+                _context_precision.embeddings   = ragas_embeddings
+                _context_recall.embeddings      = ragas_embeddings
+            except Exception as emb_err:
+                logger.warning(f"Could not wire local RAGAS embeddings: {emb_err}")
+
+
+            self._metrics_no_gt   = [_faithfulness, _answer_relevancy]
+            self._metrics_with_gt = [_faithfulness, _answer_relevancy, _context_precision, _context_recall]
 
             logger.info(f"✅ AegisEvaluator initialized with Groq model '{GROQ_MODEL}'")
         except Exception as e:
             logger.error(f"AegisEvaluator setup failed: {e}")
             self._llm = None
+
 
     # ── Public: Single Evaluation ─────────────────────────────────────────────
 
@@ -152,35 +180,25 @@ class AegisEvaluator:
         ground_truth: Optional[str] = None,
         run_id: Optional[str] = None,
     ) -> EvalResult:
-        """
-        Evaluate a single Q&A pair using RAGAS metrics.
-
-        Args:
-            query:        The user question
-            answer:       The LLM-generated answer
-            contexts:     List of retrieved context chunks
-            ground_truth: Optional reference answer for context_recall
-            run_id:       LangSmith run ID (for logging)
-
-        Returns:
-            EvalResult with per-metric scores and composite score
-        """
         result = EvalResult(query=query, answer=answer)
 
         if not self._llm or not _RAGAS_AVAILABLE:
             return self._fallback_score(result, contexts)
 
         try:
-            # Build RAGAS dataset
+            # Build RAGAS dataset supporting both 0.1.x and 0.2+ schema fields
+            ref_val = ground_truth if ground_truth else answer
             dataset_dict: Dict[str, List] = {
-                "question":  [query],
-                "answer":    [answer],
-                "contexts":  [contexts],
+                "question":    [query],
+                "user_input":  [query],
+                "answer":      [answer],
+                "response":    [answer],
+                "contexts":    [contexts],
+                "reference":   [ref_val],
+                "ground_truth":[ref_val],
             }
-            metrics = self._metrics_no_gt
-            if ground_truth:
-                dataset_dict["ground_truth"] = [ground_truth]
-                metrics = self._metrics_with_gt
+            metrics = self._metrics_with_gt if ground_truth else self._metrics_no_gt
+
 
             dataset = Dataset.from_dict(dataset_dict)
             eval_result = ragas_evaluate(dataset=dataset, metrics=metrics)
@@ -356,10 +374,13 @@ class AegisEvaluator:
     def _fallback_score(self, result: EvalResult, contexts: List[str]) -> EvalResult:
         """Return a proxy score when RAGAS is not available."""
         proxy = self.quick_score(result.query, result.answer, contexts)
+        result.faithfulness = proxy
+        result.answer_relevancy = proxy
         result.composite_score = proxy
         result.passed = proxy >= RAGAS_THRESHOLD
         result.metadata["fallback"] = True
         return result
+
 
     def _aggregate_results(self, results: List[EvalResult]) -> Dict[str, Any]:
         """Compute aggregate statistics across all results."""

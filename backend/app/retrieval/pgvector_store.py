@@ -58,13 +58,19 @@ class PgVectorStore:
         sql += " ORDER BY ve.embedding <=> :query_embedding LIMIT :top_k"
         params["top_k"] = top_k
 
-        # 4. Execute Query
+        # 4. Execute Query & Instrument Read Latency
         session = self.db or SessionLocal()
+        import time, logging
+        logger = logging.getLogger(__name__)
+        t0 = time.perf_counter()
         try:
             results = session.execute(text(sql), params).fetchall()
+            read_latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+            logger.info(f"📊 pgvector read latency: {read_latency_ms} ms (modality={modality}, top_k={top_k})")
         finally:
             if not self.db:
                 session.close()
+
 
         # 5. Format Results
         formatted = []
@@ -77,3 +83,27 @@ class PgVectorStore:
             })
             
         return formatted
+
+    def query_time_range(self, start_time: int, end_time: int, top_k: int = 10) -> List[str]:
+        """
+        Retrieves video segments matching a temporal range from PostgreSQL metadata.
+        """
+        sql = """
+            SELECT ve.content
+            FROM vector_embeddings ve
+            JOIN artifact_metadata am ON ve.artifact_id = am.artifact_id
+            WHERE am.key = 'temporal'
+              AND CAST(am.value->>'start_time' AS INTEGER) <= :end_time
+              AND CAST(am.value->>'end_time' AS INTEGER) >= :start_time
+            LIMIT :top_k
+        """
+        session = self.db or SessionLocal()
+        try:
+            results = session.execute(text(sql), {"start_time": start_time, "end_time": end_time, "top_k": top_k}).fetchall()
+            return [row.content for row in results if row.content]
+        except Exception:
+            return []
+        finally:
+            if not self.db:
+                session.close()
+

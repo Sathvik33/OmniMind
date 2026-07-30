@@ -1,19 +1,21 @@
 <div align="center">
 
-# 🧠 OmniMind
+# ⚡ AEGIS v3.0
 
-### Multi-Modal Retrieval Augmented Generation (RAG) Engine
+### Production Multi-Modal Hybrid RAG Engine
 
-**Ground your AI answers in real data — not hallucinations.**
+**Ground your AI answers in real data — hybrid search, guardrails, and enterprise storage.**
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.x-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
-[![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector%20Store-orange)](https://www.trychroma.com/)
-[![Ollama](https://img.shields.io/badge/Ollama-LLaMA3-black?logo=ollama)](https://ollama.ai/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-pgvector-blue?logo=postgresql)](https://github.com/pgvector/pgvector)
+[![MinIO](https://img.shields.io/badge/MinIO-Object%20Store-red?logo=minio)](https://min.io/)
+[![Redis](https://img.shields.io/badge/Redis-Cache%20%26%20Queue-red?logo=redis)](https://redis.io/)
+[![Groq](https://img.shields.io/badge/Groq-LLaMA3--70B-orange)](https://groq.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-[Overview](#-overview) · [Features](#-features) · [Architecture](#-system-architecture) · [Quick Start](#-quick-start) · [API Reference](#-api-reference) · [Roadmap](#-roadmap) · [Contributing](#-contributing)
+[Overview](#-overview) · [Features](#-features) · [Architecture](#-system-architecture) · [Quick Start](#-quick-start) · [API Reference](#-api-reference)
 
 </div>
 
@@ -21,16 +23,14 @@
 
 ## 📖 Overview
 
-**OmniMind** is a production-grade, multi-modal Retrieval Augmented Generation (RAG) engine that grounds every answer strictly in user-uploaded content — documents, images, and videos. Unlike general-purpose chatbots, OmniMind never fabricates information from pretrained knowledge alone. It retrieves semantically relevant context from your private data before generating a response.
+**AEGIS** is an enterprise-grade multi-modal Retrieval Augmented Generation (RAG) engine that grounds every answer strictly in user-uploaded content — documents, images, and videos. Driven by a **PostgreSQL 15 + pgvector** vector store, **MinIO** object storage, **Redis** job queuing/caching, and **LangGraph** orchestration, AEGIS retrieves semantically relevant context before generating answers via **Groq Cloud (LLaMA3-70B & LLaMA-4 Vision)**.
 
 ```
-Traditional LLM:
-  User Query → Model generates from training data → ⚠️ May hallucinate
-
-OmniMind (RAG):
-  User Query → Semantic Retrieval (ChromaDB) → Context Assembly
-             → LLM generates grounded in YOUR data → ✅ Source-backed answer
+User Query ──► Input Guardrails ──► Hybrid Retrieval (BM25 + pgvector + CLIP)
+           ──► RRF Fusion ──► Cross-Encoder Reranking ──► LangGraph Assembly
+           ──► Groq Streaming ──► Output Guardrails ──► Streamlit UI
 ```
+
 
 **Why OmniMind?**
 

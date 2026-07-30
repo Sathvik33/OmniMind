@@ -70,7 +70,8 @@ def eval_health():
     """Check RAGAS evaluator status."""
     return {
         "evaluator_active": _evaluator._llm is not None,
-        "groq_model": "llama3-8b-8192",
+        "groq_model": "llama-3.1-8b-instant",
+
         "metrics": ["faithfulness", "answer_relevancy", "context_precision", "context_recall"],
         "message": (
             "RAGAS evaluator ready with Groq LLM"

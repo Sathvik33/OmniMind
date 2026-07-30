@@ -19,8 +19,9 @@ from backend.app.retrieval.reranker import CrossEncoderReranker
 from backend.app.retrieval.hybrid_retriever import HybridRetriever
 from backend.app.rag.context_builder import ContextBuilder
 from backend.app.rag.generator import Generator as LLMGenerator
-# from backend.app.models.groq_model import GroqModel
+from backend.app.models.groq_model import GroqModel
 from backend.app.models.ollama_model import OllamaModel
+from backend.app.core.config import USE_LOCAL_LLM, OLLAMA_MODEL
 from backend.app.guardrails.input_guard import InputGuard
 from backend.app.guardrails.output_guard import OutputGuard
 from backend.app.workflow.graph import build_rag_graph
@@ -36,16 +37,25 @@ class QueryPipeline:
 
     def __init__(self, bm25_store: BM25Store | None = None):
         # ── Core components ───────────────────────────────────────────────────
-        self.collection_manager = None
         self.bm25 = bm25_store or BM25Store()
         self.reranker = CrossEncoderReranker()
         self.hybrid_retriever = HybridRetriever(
             bm25_store=self.bm25,
             reranker=self.reranker,
         )
+        self.collection_manager = self.hybrid_retriever.pg_store
         self.context_builder = ContextBuilder()
-        # self.generator = LLMGenerator(GroqModel())
-        self.generator = LLMGenerator(OllamaModel(model_name="qwen2.5:7b"))
+        
+        # Local development uses Ollama (qwen2.5:7b); production uses Groq Cloud API
+        if USE_LOCAL_LLM:
+            self.generator = LLMGenerator(OllamaModel(model_name=OLLAMA_MODEL))
+        else:
+            self.generator = LLMGenerator(GroqModel())
+
+        # ── Evaluation (lazy singleton) ───────────────────────────────────────
+        self._evaluator = None
+
+
 
         # ── Compile LangGraph ─────────────────────────────────────────────────
         self._graph = build_rag_graph({
@@ -54,6 +64,7 @@ class QueryPipeline:
             "reranker":           self.reranker,
             "generator":          self.generator,
         })
+
 
     # ── Blocking query (POST /query) ──────────────────────────────────────────
 
@@ -120,14 +131,21 @@ class QueryPipeline:
         # 4. Optional inline RAGAS evaluation
         if evaluate:
             try:
-                from backend.app.evaluation.ragas_evaluator import AegisEvaluator
-                evaluator = AegisEvaluator()
-                eval_result = evaluator.evaluate_single(
+                if self._evaluator is None:
+                    from backend.app.evaluation.ragas_evaluator import AegisEvaluator
+                    self._evaluator = AegisEvaluator()
+                raw_contexts = context_used if isinstance(context_used, list) else []
+                string_contexts = [
+                    item if isinstance(item, str) else item.get("text", str(item))
+                    for item in raw_contexts
+                ]
+                eval_result = self._evaluator.evaluate_single(
                     query=query,
                     answer=final_answer,
-                    contexts=context_used if isinstance(context_used[0] if context_used else "", str) else [],
+                    contexts=string_contexts,
                     run_id=run_id,
                 )
+
                 response["eval_scores"] = eval_result.to_dict()
             except Exception:
                 pass   # Evaluation failure must not break the main response

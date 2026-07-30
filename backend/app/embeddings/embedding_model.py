@@ -6,15 +6,15 @@ from typing import List
 class TextEmbeddingModel:
     """
     Text-only dense embedding model.
-    Model : all-MiniLM-L6-v2
-    Output: 384-dim vectors
-    Used  : document chunks → omnimind_text collection
+    Model : BAAI/bge-m3
+    Output: 1024-dim vectors
     """
 
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = "BAAI/bge-m3"):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = SentenceTransformer(model_name, device=device)
-        self.dimension = 384
+        self.dimension = 1024
+
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         return self.model.encode(

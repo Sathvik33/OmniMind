@@ -102,29 +102,27 @@ def _detect_hallucination(answer: str, context: str) -> Tuple[bool, List[str]]:
     """
     hallucinations = []
 
-    # Common hallucination markers
+    # Common hallucination markers (avoiding polite refusals which are legitimate RAG responses)
     hallucination_patterns = [
-        (r"I don't have information", "admission of uncertainty"),
-        (r"I'm not sure", "uncertainty marker"),
         (r"from my knowledge", "generic knowledge reference"),
-        (r"in general", "vague generalization"),
-        (r"most likely", "speculation"),
-        (r"probably", "speculation"),
+        (r"as an ai language model", "generic pretrained statement"),
+        (r"in general knowledge", "vague generalization"),
     ]
 
     for pattern, description in hallucination_patterns:
         if re.search(pattern, answer, re.IGNORECASE):
             hallucinations.append(f"{description}: '{pattern}'")
 
-    # Check for numeric claims not in context
-    numbers_in_answer = re.findall(r"\d+(?:\.\d+)?", answer)
-    numbers_in_context = set(re.findall(r"\d+(?:\.\d+)?", context))
+    # Check for large numeric claims not in context (>2 digits to avoid bullet points/single digits)
+    numbers_in_answer = set(re.findall(r"\b\d{3,}(?:\.\d+)?\b", answer))
+    numbers_in_context = set(re.findall(r"\b\d+(?:\.\d+)?\b", context))
 
     for num in numbers_in_answer:
         if num not in numbers_in_context and len(numbers_in_context) > 0:
             hallucinations.append(f"Numeric claim '{num}' not found in context")
 
-    return len(hallucinations) > 0, hallucinations[:3]  # Return top 3
+    return len(hallucinations) > 0, hallucinations[:3]
+
 
 
 def _calculate_confidence(

@@ -11,12 +11,15 @@ Combines:
 No LangChain dependencies - pure Python + sentence-transformers.
 """
 
+import logging
 from typing import List, Dict, Any
 
 from backend.app.retrieval.pgvector_store import PgVectorStore
 from backend.app.retrieval.bm25_store import BM25Store
 from backend.app.retrieval.reranker import CrossEncoderReranker
 from backend.app.core.config import RETRIEVAL_TOP_K, RERANKER_TOP_K, RRF_K
+
+logger = logging.getLogger(__name__)
 
 
 # ── RRF (Reciprocal Rank Fusion) Implementation ────────────────────────────────
@@ -122,7 +125,8 @@ class HybridRetriever:
         if self.bm25_store.retriever is not None:
             try:
                 bm25_results = self.bm25_store.search(query, top_k=top_k)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"BM25 search failed (falling back to dense only): {e}")
                 bm25_results = []
 
         # 2. Dense Semantic Search (embedding-based via pgvector)
@@ -130,8 +134,8 @@ class HybridRetriever:
         try:
             pg_res = self.pg_store.search(query, top_k=top_k)
             dense_results = [r["content"] for r in pg_res]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Dense semantic search failed (falling back to BM25 only): {e}")
 
         # 3. RRF Fusion (combine rank positions)
         if bm25_results and dense_results:
@@ -152,21 +156,20 @@ class HybridRetriever:
         )
 
         # 5. CLIP multimodal cross-modal retrieval via pgvector
-        modal_texts = []
+        modal_results = []
         try:
             modal_res = self.pg_store.search(query, modality="image", embedding_type="vision", top_k=max(2, final_k // 2))
-            modal_texts = [r["content"] for r in modal_res if r.get("content")]
-        except Exception:
-            pass
+            modal_results = [(r["content"], r.get("score", 0.5)) for r in modal_res if r.get("content")]
+        except Exception as e:
+            logger.warning(f"Multimodal CLIP search failed: {e}")
 
         # 6. Merge results with deduplication
         seen_texts = {doc for doc, _ in reranked_with_scores}
         merged_results = list(reranked_with_scores)
 
-        for modal_text in modal_texts:
-            if modal_text not in seen_texts and len(merged_results) < final_k + len(modal_texts):
-                # Multimodal results get slightly lower confidence
-                merged_results.append((modal_text, 0.7))
+        for modal_text, modal_score in modal_results:
+            if modal_text not in seen_texts and len(merged_results) < final_k + len(modal_results):
+                merged_results.append((modal_text, float(modal_score)))
                 seen_texts.add(modal_text)
 
         # Limit to final_k
@@ -177,7 +180,7 @@ class HybridRetriever:
                 {
                     "text": doc,
                     "relevance_score": float(score),
-                    "source": "multimodal" if doc in modal_texts else "text",
+                    "source": "multimodal" if any(doc == mt for mt, _ in modal_results) else "text",
                 }
                 for doc, score in final_results
             ]

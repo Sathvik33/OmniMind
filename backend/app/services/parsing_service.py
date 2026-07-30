@@ -9,14 +9,19 @@ class DocumentParsingService:
 
     def _load_active_parser(self):
         """Fetch active parsing model from the Model Registry."""
-        db = SessionLocal()
+        self.parser_model = None
         try:
-            self.parser_model = db.query(AIModelRegistry).filter_by(
-                category=ModelCategory.PARSER, 
-                is_active=1
-            ).first()
-        finally:
-            db.close()
+            db = SessionLocal()
+            try:
+                self.parser_model = db.query(AIModelRegistry).filter_by(
+                    category=ModelCategory.PARSER, 
+                    is_active=1
+                ).first()
+            finally:
+                db.close()
+        except Exception:
+            pass
+
 
     def parse_document(self, file_path: str, original_filename: str = "") -> Dict[str, Any]:
         """
@@ -50,25 +55,48 @@ class DocumentParsingService:
         json_path = os.path.join(out_dir, "document.json")
         images_dir = os.path.join(out_dir, "images")
         
-        if original_filename.lower().endswith('.pdf'):
+        ext = os.path.splitext(original_filename)[1] or ".pdf"
+        input_file = os.path.join(out_dir, f"input{ext}")
+        shutil.copy(file_path, input_file)
+        
+        if original_filename.lower().endswith('.pdf') or ext.lower() == '.pdf':
             try:
-                # 1. Generate JSON
+                # 1. Pre-check document complexity using LiteParse 'is-complex'
+                is_complex = True
+                try:
+                    res = subprocess.run(
+                        ["lit", "is-complex", input_file, "--quiet"],
+                        capture_output=True
+                    )
+                    # Exit code 0 indicates text-only document (no OCR/image extraction needed)
+                    is_complex = (res.returncode != 0)
+                except Exception:
+                    is_complex = True
+
+                # 2. Generate JSON document structure
                 subprocess.run(
-                    ["lit", "parse", file_path, "--format", "json", "-o", json_path],
+                    ["lit", "parse", input_file, "--format", "json", "-o", json_path],
                     check=True, capture_output=True
                 )
                 
-                # 2. Generate Markdown & Images
-                subprocess.run(
-                    ["lit", "parse", file_path, "--format", "markdown", "--image-mode", "embed", "--image-output-dir", images_dir, "-o", md_path],
-                    check=True, capture_output=True
-                )
+                # 3. Adaptive Markdown Generation: fast text pass if simple, image extraction if complex
+                parse_cmd = ["lit", "parse", input_file, "--format", "markdown"]
+                if is_complex:
+                    parse_cmd.extend(["--image-mode", "embed", "--image-output-dir", images_dir])
+                else:
+                    parse_cmd.append("--no-ocr")
+                parse_cmd.extend(["-o", md_path])
+                
+                subprocess.run(parse_cmd, check=True, capture_output=True)
                 
                 return {
                     "markdown_path": md_path,
                     "json_path": json_path,
-                    "images_dir": images_dir
+                    "images_dir": images_dir if (is_complex and os.path.exists(images_dir)) else None,
+                    "is_complex": is_complex
                 }
+
+
             except subprocess.CalledProcessError as e:
                 error_msg = e.stderr.decode('utf-8') if e.stderr else str(e)
                 raise RuntimeError(f"LiteParse CLI failed: {error_msg}")

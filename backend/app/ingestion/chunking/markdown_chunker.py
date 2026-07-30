@@ -28,7 +28,8 @@ class MarkdownHierarchicalChunker:
         md_nodes = self.md_parser.get_nodes_from_documents([doc])
         
         # 3. Split by sentences within those nodes
-        final_nodes = self.sent_splitter.get_nodes_from_nodes(md_nodes)
+        final_nodes = self.sent_splitter(md_nodes)
+
         
         chunks = []
         for node in final_nodes:

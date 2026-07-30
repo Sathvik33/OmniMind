@@ -16,15 +16,27 @@ class OllamaModel:
             temperature=OLLAMA_TEMP,
             num_predict=OLLAMA_MAX_PRED,
             streaming=True,
-            num_gpu=99,          # push all GGUF layers to GPU
-            num_thread=8,        # CPU threads for non-GPU ops
+            num_thread=4,        # CPU threads for non-GPU ops
             repeat_penalty=1.1,  # reduce repetition
         )
 
+
     def generate(self, prompt: str) -> str:
-        response = self.llm.invoke(prompt)
-        return response.content
+        try:
+            response = self.llm.invoke(prompt)
+            return response.content
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"⚠️ Ollama model error ({e}). Falling back to Groq Cloud LLM.")
+            from backend.app.models.groq_model import GroqModel
+            return GroqModel().generate(prompt)
 
     def stream(self, prompt: str):
-        for chunk in self.llm.stream(prompt):
-            yield chunk.content
+        try:
+            for chunk in self.llm.stream(prompt):
+                yield chunk.content
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"⚠️ Ollama streaming error ({e}). Falling back to Groq Cloud LLM.")
+            from backend.app.models.groq_model import GroqModel
+            yield from GroqModel().stream(prompt)

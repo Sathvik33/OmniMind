@@ -1,8 +1,8 @@
 """
 GroqVisionService — Cloud-powered image/frame captioning for AEGIS v3.0.
 
-Replaces local LLaVA (slow, GPU-heavy) with Groq's vision model:
-  - meta-llama/llama-4-scout-17b-16e-instruct  (vision capable, fast)
+Uses Groq's current vision-capable model:
+  - qwen/qwen3.6-27b  (multimodal: text + image, OCR, captioning)
 
 How it works:
   1. Load image from disk
@@ -10,17 +10,13 @@ How it works:
   3. Base64-encode → send to Groq vision API
   4. Returns a concise 1-2 sentence description
 
-Production pattern:
-  Google uses Gemini Vision, OpenAI uses GPT-4o Vision, Meta uses
-  Llama-4 Vision. All follow the same encode→API→caption pattern.
-  Groq gives us near-OpenAI quality at very high speed (speculative decoding).
+Requires GROQ_VISION_API_KEY (falls back to GROQ_API_KEY via config).
 """
 
 import base64
 import io
 import logging
 import os
-from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -28,10 +24,11 @@ load_dotenv()
 from PIL import Image
 from groq import Groq
 
+from backend.app.core.config import GROQ_VISION_API_KEY, GROQ_VISION_MODEL
+
 logger = logging.getLogger(__name__)
 
-_GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-_DESCRIBE_PROMPT   = (
+_DESCRIBE_PROMPT = (
     "Describe this image concisely in 1-2 sentences. "
     "Include: what is shown, any visible text, key objects or actions. "
     "Be factual and precise."
@@ -40,26 +37,21 @@ _DESCRIBE_PROMPT   = (
 
 class GroqVisionService:
     """
-    Cloud vision service using Groq's Llama-4 Scout model.
+    Cloud vision service using Groq's Qwen 3.6 27B multimodal model.
 
-    Same .describe(image_path) interface as the local LLaVA VisionService,
-    so VideoService and image API require zero changes.
+    Same .describe(image_path) interface as other vision services,
+    so VideoService and ingestion require zero changes.
     """
 
-    def __init__(self, model: str = _GROQ_VISION_MODEL):
-        api_key = (
-            os.getenv("GROQ_GENERATION_API_KEY")
-            or os.getenv("GROQ_API_KEY", "")
-        )
+    def __init__(self, model: str | None = None):
+        api_key = GROQ_VISION_API_KEY or os.getenv("GROQ_VISION_API_KEY", "")
         if not api_key:
             raise ValueError(
-                "GROQ_GENERATION_API_KEY is not set. Add it to your .env file."
+                "GROQ_VISION_API_KEY is not set. Add it to your .env file."
             )
         self.client = Groq(api_key=api_key)
-        self.model  = model
-        logger.info(f"✅ GroqVisionService initialized — model: {model}")
-
-    # ── Public ─────────────────────────────────────────────────────────────────
+        self.model = model or GROQ_VISION_MODEL or "qwen/qwen3.6-27b"
+        logger.info(f"GroqVisionService initialized — model: {self.model}")
 
     def describe(self, image_path: str) -> str:
         """
@@ -80,7 +72,7 @@ class GroqVisionService:
                         "role": "user",
                         "content": [
                             {
-                                "type":      "image_url",
+                                "type": "image_url",
                                 "image_url": {
                                     "url": f"data:image/jpeg;base64,{b64}"
                                 },
@@ -101,15 +93,12 @@ class GroqVisionService:
             logger.error(f"GroqVisionService.describe failed for {image_path}: {e}")
             return f"[Vision processing failed: {e}]"
 
-    # ── Private ────────────────────────────────────────────────────────────────
-
     def _encode_image(self, image_path: str) -> str:
         """
         Resize image to max 512px wide (reduces payload), encode as JPEG base64.
         Groq vision API accepts base64-encoded data URIs.
         """
         with Image.open(image_path).convert("RGB") as img:
-            # Resize: keep aspect ratio, max 512px on longest side
             img.thumbnail((512, 512), Image.LANCZOS)
 
             buf = io.BytesIO()

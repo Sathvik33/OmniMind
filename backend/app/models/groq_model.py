@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from langchain_groq import ChatGroq
-from backend.app.core.config import GROQ_GENERATION_API_KEY, GROQ_GENERATION_MODEL
+from backend.app.core.config import GROQ_LLM_API_KEY, GROQ_GENERATION_MODEL
 
 
 class GroqModel:
@@ -31,12 +31,12 @@ class GroqModel:
         temperature: float = 0.2,
         max_tokens: int = 1500,
     ):
-        api_key = GROQ_GENERATION_API_KEY or os.getenv("GROQ_GENERATION_API_KEY", "")
+        api_key = GROQ_LLM_API_KEY or os.getenv("GROQ_LLM_API_KEY", "")
         if not api_key:
             raise ValueError(
-                "GROQ_GENERATION_API_KEY is not set. "
-                "Add it to your .env file."
+                "GROQ_LLM_API_KEY is not set. Add it to your .env file."
             )
+
 
         self.llm = ChatGroq(
             api_key=api_key,

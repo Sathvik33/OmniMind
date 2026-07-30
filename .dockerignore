@@ -1,41 +1,100 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# ── Secrets (never bake into images) ──────────────────────────────────────────
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+**/credentials.json
+service-account*.json
+*-service-account.json
+secrets/
+.secrets/
+.aws/
+.gcloud/
 
-# Virtual environments
-venv/
-env/
-
-# Git
+# ── VCS / docs / IDE ──────────────────────────────────────────────────────────
 .git/
 .gitignore
-
-# Local data
-data/
-chroma_db/
-*.sqlite3
-
-# Logs
-*.log
-
-# OS files
+.gitattributes
+.github/
+.idea/
+.vscode/
+.cursor/
 .DS_Store
 Thumbs.db
-
-# Streamlit cache
-.streamlit/
-
-# Model cache
-.cache/
-huggingface/
-ollama/
-
-# Tests
-tests/
-
-# Not needed in container
+readme.md
 README.md
 LICENSE
 Tools.md
+docs/
+*.md
+
+# ── Python junk ───────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Local runtime data & models (mount at runtime instead) ────────────────────
+data/
+chroma_db/
+storage/
+output/
+scratch/
+*.sqlite3
+*.db
+*.bin
+*.log
+*.csv
+*.pkl
+*.pickle
+
+# Uploaded / media artifacts
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+
+# ── Caches ────────────────────────────────────────────────────────────────────
+.cache/
+.huggingface/
+huggingface/
+.streamlit/
+ollama/
+
+# ── Tests & local scripts (not needed in image) ───────────────────────────────
+tests/
+pytest.ini
+scratch/
+**/test_*.py
+**/*_test.py
+
+# Compose / local-only files
+docker-compose*.yml
+*.override.yml
+agent-transcripts/
