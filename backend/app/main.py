@@ -5,6 +5,7 @@ load_dotenv()
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.health import router as health_router
 from backend.app.api.upload import router as upload_router
@@ -64,6 +65,22 @@ app = FastAPI(
     ),
     version="3.0.0",
     lifespan=lifespan,
+)
+
+_cors_origins = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://localhost:8501",
+    ).split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.add_middleware(ObservabilityMiddleware)

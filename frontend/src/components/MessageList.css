@@ -1,0 +1,81 @@
+.message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 0.25rem 0.15rem 1.5rem;
+}
+
+.empty-chat {
+  margin: auto;
+  text-align: center;
+  max-width: 36ch;
+  padding: 3rem 1rem;
+}
+
+.empty-chat__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--paper);
+}
+
+.empty-chat__text {
+  margin: 0.75rem 0 0;
+  color: var(--fog);
+  line-height: 1.55;
+}
+
+.bubble {
+  max-width: min(100%, 720px);
+  padding: 0.95rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(18, 26, 36, 0.72);
+  backdrop-filter: blur(10px);
+}
+
+.bubble--user {
+  align-self: flex-end;
+  background: rgba(45, 212, 191, 0.08);
+  border-color: rgba(45, 212, 191, 0.22);
+}
+
+.bubble--assistant {
+  align-self: flex-start;
+  background: rgba(212, 165, 116, 0.06);
+  border-color: rgba(212, 165, 116, 0.18);
+}
+
+.bubble__role {
+  display: block;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fog);
+  margin-bottom: 0.45rem;
+  font-weight: 600;
+}
+
+.bubble__body {
+  white-space: pre-wrap;
+  line-height: 1.65;
+  font-size: 0.98rem;
+  color: var(--paper);
+}
+
+.caret {
+  display: inline-block;
+  width: 0.55ch;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--teal);
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}

@@ -12,6 +12,7 @@ No LangChain dependencies - pure Python + sentence-transformers.
 """
 
 import logging
+import re
 from typing import List, Dict, Any
 
 from backend.app.retrieval.pgvector_store import PgVectorStore
@@ -20,6 +21,25 @@ from backend.app.retrieval.reranker import CrossEncoderReranker
 from backend.app.core.config import RETRIEVAL_TOP_K, RERANKER_TOP_K, RRF_K
 
 logger = logging.getLogger(__name__)
+
+_META_PREFIX = re.compile(
+    r"^(?:\[(?:Document|Image Document|Image File|Hierarchy|Contains Table|Contains Image):[^\]]*\]\s*)+",
+    re.MULTILINE,
+)
+
+
+def _body_text(doc: str) -> str:
+    """Strip retrieval metadata headers to judge real content length."""
+    text = _META_PREFIX.sub("", doc).strip()
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^---+$", "", text, flags=re.MULTILINE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _filter_weak_docs(docs: List[str], min_chars: int = 100) -> List[str]:
+    """Drop tiny date/header-only chunks that poison dense retrieval."""
+    kept = [d for d in docs if len(_body_text(d)) >= min_chars]
+    return kept if kept else docs
 
 
 # ── RRF (Reciprocal Rank Fusion) Implementation ────────────────────────────────
@@ -124,7 +144,7 @@ class HybridRetriever:
         bm25_results = []
         if self.bm25_store.retriever is not None:
             try:
-                bm25_results = self.bm25_store.search(query, top_k=top_k)
+                bm25_results = _filter_weak_docs(self.bm25_store.search(query, top_k=top_k))
             except Exception as e:
                 logger.warning(f"BM25 search failed (falling back to dense only): {e}")
                 bm25_results = []
@@ -132,8 +152,9 @@ class HybridRetriever:
         # 2. Dense Semantic Search (embedding-based via pgvector)
         dense_results = []
         try:
-            pg_res = self.pg_store.search(query, top_k=top_k)
-            dense_results = [r["content"] for r in pg_res]
+            # Fetch extra candidates so filtering weak micro-chunks still leaves enough
+            pg_res = self.pg_store.search(query, top_k=max(top_k * 2, top_k + 10))
+            dense_results = _filter_weak_docs([r["content"] for r in pg_res])[:top_k]
         except Exception as e:
             logger.warning(f"Dense semantic search failed (falling back to BM25 only): {e}")
 

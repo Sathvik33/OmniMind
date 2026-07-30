@@ -53,12 +53,23 @@ ENV/
 htmlcov/
 .tox/
 
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+node_modules/
+
 # ── Local runtime data & models (mount at runtime instead) ────────────────────
 data/
 chroma_db/
 storage/
 output/
 scratch/
+frontend/dist/
+frontend/legacy-streamlit-app/
+frontend/legacy-streamlit-requirements.txt
+frontend/Dockerfile.streamlit.bak
 *.sqlite3
 *.db
 *.bin

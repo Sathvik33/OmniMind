@@ -189,18 +189,44 @@ class MultimodalIngestionPipeline:
         if not markdown_content.strip():
             markdown_content = f"# Document: {artifact.filename}\n\n[Scanned document content - no readable text layer found]"
 
+        # Guard: binary / corrupted "text" produces endless micro-chunks and looks like an infinite Celery loop
+        sample = markdown_content[:4000]
+        non_printable = sum(1 for ch in sample if ord(ch) < 9 or (13 < ord(ch) < 32))
+        if sample and (non_printable / max(len(sample), 1)) > 0.08:
+            raise NonRetryableIngestionError(
+                f"Extracted content for {artifact.filename} looks binary/corrupt. "
+                "Use LiteParse with LibreOffice for Office files, or re-export the document.",
+                stage="PARSING",
+            )
+
         # 3. CHUNKING & EMBEDDING Stage
         notify("CHUNKING_EMBEDDING")
         try:
             chunker = MarkdownHierarchicalChunker()
             chunks = chunker.chunk(markdown_content, artifact_name=artifact.filename)
-            
+            max_chunks = int(os.getenv("MAX_INGEST_CHUNKS", "200"))
+            if len(chunks) > max_chunks:
+                logger.warning(
+                    "Truncating chunks for %s from %s to %s",
+                    artifact.filename,
+                    len(chunks),
+                    max_chunks,
+                )
+                chunks = chunks[:max_chunks]
+
+            logger.info(
+                "Embedding %s text chunks for artifact %s (%s)",
+                len(chunks),
+                artifact.id,
+                artifact.filename,
+            )
+
             vectors_to_add = list(vision_vectors_to_add)
-            for chunk_data in chunks:
+            for idx, chunk_data in enumerate(chunks, start=1):
                 text = chunk_data["text"]
                 if not text.strip():
                     continue
-                    
+
                 meta = chunk_data["metadata"]
                 enriched_text = (
                     f"[Document: {meta.get('document_name')}]\n"
@@ -209,15 +235,33 @@ class MultimodalIngestionPipeline:
                     f"[Contains Image: {meta.get('contains_image')}]\n"
                     f"\n{text}"
                 )
-                
+
                 embedding = embedding_service.embed_text(enriched_text)
+                if not embedding:
+                    raise NonRetryableIngestionError(
+                        f"Empty embedding returned for chunk {idx}/{len(chunks)}",
+                        stage="CHUNKING_EMBEDDING",
+                    )
+
                 vec = VectorEmbedding(
                     artifact_id=artifact.id,
                     embedding_type="text",
                     content=enriched_text,
-                    embedding=embedding
+                    embedding=embedding,
                 )
                 vectors_to_add.append(vec)
+
+                if idx % 25 == 0:
+                    notify("CHUNKING_EMBEDDING")  # heartbeat while embedding large docs
+                    logger.info("Embedded %s/%s chunks for artifact %s", idx, len(chunks), artifact.id)
+
+            if not vectors_to_add:
+                raise NonRetryableIngestionError(
+                    f"No embeddable content extracted from {artifact.filename}",
+                    stage="CHUNKING_EMBEDDING",
+                )
+        except NonRetryableIngestionError:
+            raise
         except Exception as e:
             raise NonRetryableIngestionError(f"Chunking or embedding failed: {e}", stage="CHUNKING_EMBEDDING")
 

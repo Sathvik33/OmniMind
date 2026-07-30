@@ -1,14 +1,14 @@
 from typing import List
 from sentence_transformers import SentenceTransformer, util
-import torch
 from .base import BaseChunker
+from backend.app.core.config import TEXT_EMBEDDING_MODEL
 
 
 class SemanticChunker(BaseChunker):
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.model = SentenceTransformer(TEXT_EMBEDDING_MODEL)
 
     def chunk(self, text: str) -> List[str]:
         sentences = [s.strip() for s in text.split(".") if s.strip()]

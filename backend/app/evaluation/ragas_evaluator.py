@@ -142,23 +142,31 @@ class AegisEvaluator:
             _context_precision.llm   = self._llm
             _context_recall.llm      = self._llm
 
-            # Wire local embeddings into RAGAS metrics to eliminate OpenAI API key requirement
+            # Wire BGE-M3 embeddings (same multilingual model as retrieval) into RAGAS
             try:
-                try:
-                    from ragas.embeddings import HuggingFaceEmbeddings as RagasHuggingFaceEmbeddings
-                    ragas_embeddings = RagasHuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-                except Exception:
-                    from ragas.embeddings import LangchainEmbeddingsWrapper
-                    from langchain_community.embeddings import HuggingFaceEmbeddings
-                    hf_emb = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-                    ragas_embeddings = LangchainEmbeddingsWrapper(hf_emb)
+                from ragas.embeddings import LangchainEmbeddingsWrapper
+                from langchain_core.embeddings import Embeddings
+                from backend.app.core.config import TEXT_EMBEDDING_MODEL
+                from backend.app.services.embedding_service import embedding_service
 
-                _faithfulness.embeddings        = ragas_embeddings
-                _answer_relevancy.embeddings    = ragas_embeddings
-                _context_precision.embeddings   = ragas_embeddings
-                _context_recall.embeddings      = ragas_embeddings
+                class BgeM3Embeddings(Embeddings):
+                    """Reuse the process-local BGE-M3 embedder for RAGAS metrics."""
+
+                    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+                        return [embedding_service.embed_text(t) for t in texts]
+
+                    def embed_query(self, text: str) -> List[float]:
+                        return embedding_service.embed_text(text)
+
+                ragas_embeddings = LangchainEmbeddingsWrapper(BgeM3Embeddings())
+
+                _faithfulness.embeddings = ragas_embeddings
+                _answer_relevancy.embeddings = ragas_embeddings
+                _context_precision.embeddings = ragas_embeddings
+                _context_recall.embeddings = ragas_embeddings
+                logger.info(f"RAGAS embeddings wired to {TEXT_EMBEDDING_MODEL}")
             except Exception as emb_err:
-                logger.warning(f"Could not wire local RAGAS embeddings: {emb_err}")
+                logger.warning(f"Could not wire BGE-M3 RAGAS embeddings: {emb_err}")
 
 
             self._metrics_no_gt   = [_faithfulness, _answer_relevancy]

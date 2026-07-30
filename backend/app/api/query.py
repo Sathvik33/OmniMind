@@ -37,6 +37,7 @@ class QueryResponse(BaseModel):
     retrieval_metadata:  Optional[Dict[str, Any]] = None
     latency_ms:          Optional[Dict[str, float]] = None
     eval_scores:         Optional[Dict[str, Any]] = None
+    structured_answer:   Optional[Dict[str, Any]] = None
 
 
 @router.post("/query", response_model=QueryResponse)

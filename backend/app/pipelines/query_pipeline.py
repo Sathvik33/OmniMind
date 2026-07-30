@@ -114,6 +114,7 @@ class QueryPipeline:
         context_used  = context_used if isinstance(context_used, list) else []
         run_id        = final_state.get("run_id")
         latency_ms    = final_state.get("latency_ms", {})
+        structured    = final_state.get("structured_answer")
 
         response = {
             "answer":            final_answer,
@@ -126,6 +127,7 @@ class QueryPipeline:
             "latency_ms":        latency_ms,
             "run_id":            run_id,
             "error":             False,
+            "structured_answer": structured,
         }
 
         # 4. Optional inline RAGAS evaluation

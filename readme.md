@@ -88,7 +88,7 @@ Ingestion Layer ──── Documents  (PDF / DOCX / PPTX / XLSX / TXT)
   │              ──── Images    (LLaVA vision → text description)
   │              ──── Videos    (frame extract → diff detection → caption → timestamped segments)
   ▼
-Chunking & Embedding  (all-MiniLM-L6-v2 · GPU batch encoding)
+Chunking & Embedding  (BAAI/bge-m3 · multilingual · GPU batch encoding)
   │
   ▼
 Vector Storage (ChromaDB)  ── metadata: modality · source · start_time · end_time
@@ -140,7 +140,7 @@ FastAPI StreamingResponse  →  Streamlit Frontend
        │
 ┌──────▼──────────────────────────────────────────────────────────┐
 │                      Embedding Layer                            │
-│           all-MiniLM-L6-v2  ·  GPU Batch Encoding (CUDA)        │
+│           BAAI/bge-m3 (1024-dim, multilingual)  ·  GPU Batch Encoding        │
 └────────────────────────────┬────────────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────────────┐
@@ -192,7 +192,7 @@ Manages all vision-model operations end-to-end:
 #### 4. Embedding Layer — `backend/app/embeddings/`
 
 ```python
-SentenceTransformer("all-MiniLM-L6-v2", device="cuda")
+SentenceTransformer("BAAI/bge-m3", device="cuda")
 # Batch encoding enabled for maximum throughput
 ```
 

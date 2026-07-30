@@ -1,0 +1,83 @@
+:root {
+  --ink: #0c1219;
+  --ink-2: #121a24;
+  --ink-3: #1a2433;
+  --fog: #8b9bb0;
+  --paper: #e8eef5;
+  --paper-dim: #c5d0de;
+  --teal: #2dd4bf;
+  --teal-dim: #1a9e8f;
+  --sand: #d4a574;
+  --sand-soft: rgba(212, 165, 116, 0.18);
+  --line: rgba(232, 238, 245, 0.1);
+  --danger: #e07a6a;
+  --ok: #6bcb9a;
+  --font-display: "Syne", sans-serif;
+  --font-body: "Manrope", sans-serif;
+  --radius: 12px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  color: var(--paper);
+  background: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+}
+
+::selection {
+  background: rgba(45, 212, 191, 0.35);
+  color: var(--paper);
+}
+
+.app-shell {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.content-layer {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}

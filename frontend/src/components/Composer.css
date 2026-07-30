@@ -1,0 +1,136 @@
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.composer__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  align-self: flex-start;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid rgba(212, 165, 116, 0.35);
+  background: var(--sand-soft);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: var(--sand);
+  font-weight: 600;
+}
+
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sand);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.upload-tray {
+  overflow: hidden;
+}
+
+.upload-drop {
+  width: 100%;
+  text-align: left;
+  border: 1px dashed rgba(45, 212, 191, 0.4);
+  background: rgba(45, 212, 191, 0.06);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.upload-drop strong {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+}
+
+.upload-drop span {
+  color: var(--fog);
+  font-size: 0.82rem;
+}
+
+.upload-drop:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.composer__bar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.6rem;
+  align-items: end;
+  padding: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(12, 18, 25, 0.85);
+  backdrop-filter: blur(12px);
+}
+
+.icon-btn,
+.send-btn {
+  border: 1px solid var(--line);
+  background: var(--ink-3);
+  border-radius: 10px;
+  height: 44px;
+  transition: background 0.2s var(--ease), border-color 0.2s var(--ease), transform 0.2s var(--ease);
+}
+
+.icon-btn {
+  width: 44px;
+  font-size: 1.35rem;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.icon-btn--active,
+.icon-btn:hover {
+  border-color: rgba(45, 212, 191, 0.45);
+  color: var(--teal);
+}
+
+.send-btn {
+  padding: 0 1.1rem;
+  font-weight: 700;
+  color: #041210;
+  background: linear-gradient(120deg, var(--teal), #1fa896);
+  border: none;
+}
+
+.send-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.send-btn:disabled,
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.composer__bar textarea {
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  min-height: 44px;
+  max-height: 140px;
+  padding: 0.7rem 0.35rem;
+  line-height: 1.45;
+}
+
+.composer__bar textarea::placeholder {
+  color: var(--fog);
+}

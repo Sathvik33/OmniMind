@@ -30,6 +30,7 @@ class OmniMindState(TypedDict, total=False):
     # ── Generation ─────────────────────────────────────────────────────────────
     context: str                     # assembled context string
     answer: str                      # raw LLM answer
+    structured_answer: Dict[str, Any]  # Pydantic StructuredAnswer dump
 
     # ── Post-guard ─────────────────────────────────────────────────────────────
     final_answer: str                # PII-masked, grounding-checked answer

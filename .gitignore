@@ -2,7 +2,7 @@
 .env
 .env.*
 !.env.example
-*.env
+!**/.env.example
 *.pem
 *.key
 *.p12
@@ -21,8 +21,6 @@ secrets/
 .config/gcloud/
 *.secret
 *secret*.json
-.env.local
-.env.*.local
 .envrc
 
 # ── Python ────────────────────────────────────────────────────────────────────
@@ -43,6 +41,7 @@ pip-wheel-metadata/
 venv/
 env/
 ENV/
+node_modules/
 
 # ── Caches & tooling ──────────────────────────────────────────────────────────
 .pytest_cache/
@@ -54,6 +53,9 @@ htmlcov/
 .cache/
 .huggingface/
 .streamlit/
+
+# Frontend build
+frontend/dist/
 
 # ── IDE / OS ──────────────────────────────────────────────────────────────────
 .idea/

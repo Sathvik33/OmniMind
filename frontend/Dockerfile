@@ -1,14 +1,16 @@
-FROM python:3.11-slim
-
+# Build
+FROM node:22-alpine AS build
 WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci
+COPY . .
+ARG VITE_BACKEND_URL=http://backend:8000
+ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
+RUN npm run build
 
-COPY frontend/requirements.txt ./requirements.txt
-
-RUN pip install --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY frontend ./frontend
-
-EXPOSE 8501
-
-CMD ["streamlit", "run", "frontend/app/user.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Serve
+FROM nginx:1.27-alpine
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

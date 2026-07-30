@@ -267,7 +267,13 @@ def make_generate(generator):
         if not context:
             return {"answer": "No relevant context found in your uploaded data."}
 
-        answer = generator.generate(query, context)
+        structured = None
+        try:
+            structured_obj = generator.generate_structured(query, context)
+            answer = structured_obj.to_plain_text()
+            structured = structured_obj.model_dump()
+        except Exception:
+            answer = generator.generate(query, context)
 
         latency = state.get("latency_ms", {})
         latency["generate"] = _ms(t0)
@@ -281,7 +287,10 @@ def make_generate(generator):
                 latency_ms=latency["generate"],
             )
 
-        return {"answer": answer, "latency_ms": latency}
+        update = {"answer": answer, "latency_ms": latency}
+        if structured is not None:
+            update["structured_answer"] = structured
+        return update
 
     return generate
 
