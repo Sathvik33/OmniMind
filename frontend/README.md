@@ -1,32 +1,53 @@
-# React + TypeScript + Vite
+# Aegis Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19 + Vite SPA for the multimodal RAG workspace.
 
-Currently, two official plugins are available:
+## Run
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+cp .env.example .env   # VITE_BACKEND_URL=http://127.0.0.1:8000
+npm run dev            # http://localhost:5173
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+```bash
+npm run build
+npm run preview
+```
+
+## What you get
+
+| Surface | Role |
+|---------|------|
+| `Landing` | Brand-first entry (paper / desk visual) |
+| `Workspace` | Chat state, upload → job poll, scoped `artifact_ids` |
+| `MessageList` | Text bubbles + **in-thread document cards** + stream caret |
+| `Composer` | Attach tray + send (locked until embeddings ready) |
+| `api/client.ts` | `uploadFile`, `getJobStatus`, `streamQuery`, `cleanStreamText` |
+
+## Streaming contract
+
+1. `POST {VITE_BACKEND_URL}/query-stream` with `{ query, artifact_ids }`
+2. Read `ReadableStream` as UTF-8 text chunks
+3. Strip `[Retrieved:…]` / confidence / warning lines for display
+4. Show caret on the last assistant message while `streaming === true`
+
+## Upload contract
+
+1. Document card inserted immediately (`uploading`)
+2. `POST /upload` → `job_id` / `artifact_id`
+3. Poll `GET /jobs/{id}` every ~1.5s
+4. Card → `ready` · unlock ask · keep `artifact_id` in scope
+
+## Design tokens
+
+Defined in `src/index.css` — forest ink on warm paper (`Fraunces` + `Figtree`). Avoid neon “AI SaaS” chrome; keep the desk metaphor.
+
+## Stack
+
+- React 19 + TypeScript
+- Vite 8
+- Framer Motion (page / message enter)
+- Plain CSS modules co-located with components
+
+Legacy Streamlit UI lives under `legacy-streamlit-app/` and is not the primary surface.
