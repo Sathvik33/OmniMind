@@ -81,4 +81,11 @@ def query_stream(request: QueryRequest):
         except Exception as e:
             yield f"\n\n❌ Error: {str(e)}\n"
 
-    return StreamingResponse(token_generator(), media_type="text/plain")
+    return StreamingResponse(
+        token_generator(),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )

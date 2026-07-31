@@ -309,63 +309,82 @@ class VideoService:
         source_name: str,
         duration: float,
     ) -> List[Dict]:
+        """
+        Build timed RAG segments from ASR windows + every vision caption.
+
+        Previously, unused keyframe captions were discarded whenever ASR existed,
+        so object questions (cars, people, signs) often had nothing to retrieve.
+        Now every caption becomes its own visual segment, and ASR windows still
+        attach in-range (or nearest) visuals.
+        """
         windows = self._window_asr(asr_segments, duration)
+        segments: List[Dict] = []
+        used_caption_ts: set[int] = set()
 
-        if windows:
-            segments: List[Dict] = []
-            for win in windows:
+        for win in windows:
+            in_range = [c for c in captions if win["start"] <= c[0] <= win["end"]]
+            if not in_range:
                 nearest = self._nearest_caption(win["start"], win["end"], captions)
-                visual = nearest[1] if nearest else ""
-                frame_path = nearest[2] if nearest else None
-                spoken = win["text"].strip()
-                parts = [f"[Video: {source_name}] t={win['start']}–{win['end']}"]
-                if spoken:
-                    parts.append(f"Spoken: {spoken}")
-                if visual:
-                    parts.append(f"Visual: {visual}")
-                if len(parts) == 1:
-                    continue
-                segments.append(
-                    {
-                        "text": "\n".join(parts),
-                        "start": int(win["start"]),
-                        "end": int(win["end"]),
-                        "frame_path": frame_path,
-                        "has_asr": bool(spoken),
-                        "has_visual": bool(visual),
-                    }
-                )
-            # Unused caption frames
-            used = {s["frame_path"] for s in segments if s.get("frame_path")}
-            for _, _, path in captions:
-                if path and path not in used:
-                    self._cleanup_paths([path])
-            return segments
+                mid = (win["start"] + win["end"]) / 2.0
+                # Only attach if reasonably close (avoid wrong-scene captions)
+                if nearest and abs(nearest[0] - mid) <= max(_ASR_WINDOW_SEC, 20):
+                    in_range = [nearest]
 
-        # Caption-only fallback (no ASR)
-        segments = []
-        for i, (ts, caption, frame_path) in enumerate(captions):
-            end = (
-                captions[i + 1][0]
-                if i + 1 < len(captions)
-                else int(ts + VIDEO_FRAME_INTERVAL_SEC)
+            spoken = win["text"].strip()
+            visual_lines: List[str] = []
+            frame_path = None
+            for ts, cap, path in in_range:
+                used_caption_ts.add(ts)
+                visual_lines.append(f"At {ts}s: {cap}")
+                if frame_path is None:
+                    frame_path = path
+
+            parts = [f"[Video: {source_name}] t={win['start']}–{win['end']}"]
+            if spoken:
+                parts.append(f"Spoken: {spoken}")
+            if visual_lines:
+                parts.append("Visual:\n" + "\n".join(visual_lines))
+            if len(parts) == 1:
+                continue
+            segments.append(
+                {
+                    "text": "\n".join(parts),
+                    "start": int(win["start"]),
+                    "end": int(win["end"]),
+                    "frame_path": frame_path,
+                    "has_asr": bool(spoken),
+                    "has_visual": bool(visual_lines),
+                }
             )
+
+        # Always keep caption-only segments for keyframes not folded into ASR
+        for i, (ts, caption, frame_path) in enumerate(captions):
+            if ts in used_caption_ts:
+                continue
+            if i + 1 < len(captions):
+                end = captions[i + 1][0]
+            else:
+                end = int(ts + VIDEO_FRAME_INTERVAL_SEC)
             if duration > 0:
                 end = min(end, int(duration))
             end = max(end, ts + 1)
+            # Small pad so point temporal queries near the keyframe still hit
+            start = max(0, int(ts) - 2)
             segments.append(
                 {
                     "text": (
-                        f"[Video: {source_name}] t={ts}–{end}\n"
-                        f"Visual: {caption}"
+                        f"[Video: {source_name}] t={start}–{end}\n"
+                        f"Visual: At {ts}s: {caption}"
                     ),
-                    "start": int(ts),
+                    "start": start,
                     "end": int(end),
                     "frame_path": frame_path,
                     "has_asr": False,
                     "has_visual": True,
                 }
             )
+
+        segments.sort(key=lambda s: (s["start"], s["end"]))
         return segments
 
     def _window_asr(self, asr_segments: List[Dict], duration: float) -> List[Dict]:

@@ -28,39 +28,105 @@ from backend.app.utils.time_utils import timestamp_to_seconds
 
 # ── Time detection helpers (shared with classify + temporal nodes) ─────────────
 
-_HHMMSS_RE    = re.compile(r"\b(\d{2}:\d{2}:\d{2})\b")
+_HHMMSS_RE    = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?)\b")
 _SECONDS_RE   = re.compile(r"\b(\d+)\s*seconds?\b", re.IGNORECASE)
-_FIRST_RE     = re.compile(r"first\s+(\d+)\s*seconds?", re.IGNORECASE)
-_BETWEEN_RE   = re.compile(r"between\s+(\d+)\s+and\s+(\d+)\s*seconds?", re.IGNORECASE)
-_LAST_RE      = re.compile(r"last\s+(\d+)\s*seconds?", re.IGNORECASE)
+_SEC_SHORT_RE = re.compile(r"\b(\d+)\s*s\b", re.IGNORECASE)
+_AT_SECOND_RE = re.compile(
+    r"\b(?:at|around|near|about)\s+(?:the\s+)?(\d+)(?:st|nd|rd|th)?\s*seconds?\b",
+    re.IGNORECASE,
+)
+_SECOND_N_RE = re.compile(
+    r"\b(?:at|around|near|about)?\s*(?:the\s+)?second\s+(\d+)\b",
+    re.IGNORECASE,
+)
+_NTH_SECOND_RE = re.compile(r"\b(\d+)(?:st|nd|rd|th)\s+second\b", re.IGNORECASE)
+_FIRST_RE     = re.compile(
+    r"\bfirst\s+(\d+)\s*(seconds?|s|minutes?|mins?|m)\b",
+    re.IGNORECASE,
+)
+_FIRST_MINUTE_RE = re.compile(r"\bfirst\s+minute\b", re.IGNORECASE)
+_MINUTE_RE    = re.compile(r"\b(\d+)\s*(?:minutes?|mins?|m)\b", re.IGNORECASE)
+_BETWEEN_RE   = re.compile(
+    r"between\s+(\d+)\s+and\s+(\d+)\s*(seconds?|s)?\b",
+    re.IGNORECASE,
+)
+
+# Expand point-in-time queries so they overlap coarse ASR/keyframe windows
+_POINT_PAD_SEC = 8
+
+
+def _expand_point(start: int, end: int, focus: Optional[int] = None) -> Dict[str, int]:
+    """Widen zero-width (or tiny) ranges so temporal SQL can hit stored windows."""
+    if end < start:
+        start, end = end, start
+    out: Dict[str, int] = {"start": start, "end": end}
+    if focus is not None:
+        out["focus"] = focus
+    if end - start <= 1:
+        t = focus if focus is not None else start
+        out["start"] = max(0, t - _POINT_PAD_SEC)
+        out["end"] = t + _POINT_PAD_SEC
+        out["focus"] = t
+    return out
+
+
+def _unit_to_seconds(n: int, unit: str) -> int:
+    u = (unit or "s").lower()
+    if u.startswith("m"):
+        return n * 60
+    return n
 
 
 def _detect_time(query: str) -> Optional[Dict[str, int]]:
     """
     Parse natural-language time references in the query.
-    Returns {\"start\": int, \"end\": int} or None.
+    Returns {\"start\": int, \"end\": int, optional \"focus\": int} or None.
     """
     q = query.lower()
 
+    m = _FIRST_MINUTE_RE.search(q)
+    if m:
+        return {"start": 0, "end": 60}
+
     m = _FIRST_RE.search(q)
     if m:
-        return {"start": 0, "end": int(m.group(1))}
+        return {"start": 0, "end": _unit_to_seconds(int(m.group(1)), m.group(2))}
 
     m = _BETWEEN_RE.search(q)
     if m:
         return {"start": int(m.group(1)), "end": int(m.group(2))}
 
-    # HH:MM:SS timestamps
+    m = _AT_SECOND_RE.search(q) or _NTH_SECOND_RE.search(q) or _SECOND_N_RE.search(q)
+    if m:
+        t = int(m.group(1))
+        return _expand_point(t, t, focus=t)
+
+    # HH:MM[:SS] timestamps
     stamps = _HHMMSS_RE.findall(query)
     if stamps:
-        times = [timestamp_to_seconds(t) for t in stamps]
-        return {"start": min(times), "end": max(times)}
+        times = []
+        for t in stamps:
+            if t.count(":") == 1:
+                mm, ss = t.split(":")
+                times.append(int(mm) * 60 + int(ss))
+            else:
+                times.append(timestamp_to_seconds(t))
+        focus = min(times) if len(set(times)) == 1 else None
+        return _expand_point(min(times), max(times), focus=focus)
 
-    # Plain "N seconds"
-    secs = _SECONDS_RE.findall(q)
+    # Plain "N seconds" / "Ns"
+    secs = _SECONDS_RE.findall(q) or _SEC_SHORT_RE.findall(q)
     if secs:
         times = [int(s) for s in secs]
-        return {"start": min(times), "end": max(times)}
+        focus = min(times) if len(times) == 1 else None
+        return _expand_point(min(times), max(times), focus=focus)
+
+    # "N minutes" as a point
+    mins = _MINUTE_RE.findall(q)
+    if mins:
+        vals = [int(m) * 60 for m in mins]
+        focus = min(vals) if len(vals) == 1 else None
+        return _expand_point(min(vals), max(vals), focus=focus)
 
     return None
 

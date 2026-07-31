@@ -66,20 +66,27 @@ export async function streamQuery(
   return full;
 }
 
-export function cleanStreamText(text: string): string {
-  const stripped = text
-    .split("\n")
-    .filter((line) => {
-      const s = line.trim();
-      if (/^\[Retrieved:.*\]$/.test(s)) return false;
-      if (/^\[Response confidence:.*\]$/.test(s)) return false;
-      if (s.startsWith("⚠️") || s.startsWith("ℹ️")) return false;
-      return true;
-    })
-    .join("\n");
+export function cleanStreamText(text: string, opts?: { final?: boolean }): string {
+  const lines = text.split("\n");
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const s = line.trim();
+    const isLast = i === lines.length - 1;
+    // Keep incomplete trailing metadata lines out of the live view
+    if (!opts?.final && isLast && (/^\[Retrieved:/.test(s) || /^\[Response confidence:/.test(s))) {
+      continue;
+    }
+    if (/^\[Retrieved:.*\]$/.test(s)) continue;
+    if (/^\[Response confidence:.*\]$/.test(s)) continue;
+    if (s.startsWith("⚠️") || s.startsWith("ℹ️") || s.startsWith("❌")) continue;
+    kept.push(line);
+  }
+
+  let stripped = kept.join("\n");
 
   // Light markdown → plain text for any residual LLM markup
-  return stripped
+  stripped = stripped
     .replace(/```[\w+-]*\n?([\s\S]*?)```/g, "$1")
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
@@ -88,6 +95,7 @@ export function cleanStreamText(text: string): string {
     .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/^\s*[-*+]\s+/gm, "• ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .replace(/\n{3,}/g, "\n\n");
+
+  return opts?.final ? stripped.trim() : stripped.replace(/^\n+/, "");
 }

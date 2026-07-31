@@ -64,16 +64,26 @@ class Generator:
 
     def stream_generate(self, query: str, context: str) -> Generator[str, None, None]:
         """
-        Produce a plain-text answer. Uses structured generation then streams
-        the flattened plain text in small chunks for UI compatibility.
+        Token-by-token plain-text streaming for the live UI.
+
+        Uses the LLM's native .stream() when available so tokens arrive as
+        they are generated (not after a full blocking generate()).
         """
+        prompt = self._build_stream_prompt(query, context)
+        if hasattr(self.llm, "stream"):
+            try:
+                for token in self.llm.stream(prompt):
+                    if token:
+                        yield token
+                return
+            except Exception as e:
+                logger.warning("Native LLM stream failed (%s); falling back.", e)
+
+        # Fallback: generate fully, then yield in small slices
         plain = self.generate(query, context)
-        # Stream by paragraph so the UI still feels progressive
-        parts = plain.split("\n\n")
-        for i, part in enumerate(parts):
-            chunk = part if i == len(parts) - 1 else part + "\n\n"
-            if chunk:
-                yield chunk
+        step = 24
+        for i in range(0, len(plain), step):
+            yield plain[i : i + step]
 
     def _normalize_structured(self, structured: StructuredAnswer) -> StructuredAnswer:
         answer = markdown_to_plain_text(structured.answer)
@@ -116,8 +126,33 @@ class Generator:
             return StructuredAnswer(answer=plain, no_context=no_ctx)
 
     @staticmethod
+    def _build_stream_prompt(query: str, context: str) -> str:
+        """Plain-text prompt for live token streaming (no JSON wrapper)."""
+        return f"""You are Aegis, a grounded retrieval assistant.
+
+Answer the question using ONLY the Context below.
+
+Rules:
+- Plain text only. No markdown (#, **, *, `, ---).
+- For lists use "1. " "2. " "3. " or the "• " character.
+- Prefer concrete facts from context (names, times, objects, colors).
+- Spoken and Visual lines both count as evidence. If Visual mentions vehicles,
+  people, or objects, treat that as answering related questions.
+- When the question asks about a specific time, focus on lines whose t= range
+  or "At Ns:" stamps are nearest that moment.
+- If context is partial, answer what is available and say what is unclear.
+- Only say you could not find that when the context has nothing related.
+
+Context:
+{context}
+
+Question:
+{query}
+"""
+
+    @staticmethod
     def _build_prompt(query: str, context: str) -> str:
-        return f"""You are AEGIS, a grounded retrieval assistant.
+        return f"""You are Aegis, a grounded retrieval assistant.
 
 TASK
 Answer the user question using ONLY the Context below.

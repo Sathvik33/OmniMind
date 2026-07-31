@@ -34,7 +34,9 @@ class OllamaModel:
     def stream(self, prompt: str):
         try:
             for chunk in self.llm.stream(prompt):
-                yield chunk.content
+                text = getattr(chunk, "content", None)
+                if text:
+                    yield text
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(f"⚠️ Ollama streaming error ({e}). Falling back to Groq Cloud LLM.")

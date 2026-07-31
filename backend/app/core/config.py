@@ -55,9 +55,9 @@ GROQ_VISION_MODEL     = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 
 
 # ── Video Ingestion (cloud ASR + sparse vision; requires ffmpeg on PATH) ──────
-VIDEO_FRAME_INTERVAL_SEC    = int(os.getenv("VIDEO_FRAME_INTERVAL_SEC", "15"))
+VIDEO_FRAME_INTERVAL_SEC    = int(os.getenv("VIDEO_FRAME_INTERVAL_SEC", "8"))
 VIDEO_SCENE_DIFF_THRESHOLD  = float(os.getenv("VIDEO_SCENE_DIFF_THRESHOLD", "8"))
-VIDEO_MAX_KEYFRAMES         = int(os.getenv("VIDEO_MAX_KEYFRAMES", "12"))
+VIDEO_MAX_KEYFRAMES         = int(os.getenv("VIDEO_MAX_KEYFRAMES", "20"))
 VIDEO_ASR_ENABLED           = os.getenv("VIDEO_ASR_ENABLED", "true").lower() == "true"
 VIDEO_VISION_ENABLED        = os.getenv("VIDEO_VISION_ENABLED", "true").lower() == "true"
 GROQ_WHISPER_MODEL          = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")

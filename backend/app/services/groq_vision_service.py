@@ -29,9 +29,10 @@ from backend.app.core.config import GROQ_VISION_API_KEY, GROQ_VISION_MODEL
 logger = logging.getLogger(__name__)
 
 _DESCRIBE_PROMPT = (
-    "Describe this image concisely in 1-2 sentences. "
-    "Include: what is shown, any visible text, key objects or actions. "
-    "Be factual and precise."
+    "Describe this video frame in 2-3 factual sentences. "
+    "Name key objects: vehicles (type, color, count if clear), people, buildings, "
+    "signs or on-screen text, and the setting/lighting/action. "
+    "Be specific and concrete. Do not speculate."
 )
 
 
@@ -84,7 +85,7 @@ class GroqVisionService:
                         ],
                     }
                 ],
-                max_tokens=120,
+                max_tokens=220,
                 temperature=0.1,
             )
             return response.choices[0].message.content.strip()

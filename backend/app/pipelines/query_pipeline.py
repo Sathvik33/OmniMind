@@ -217,18 +217,34 @@ class QueryPipeline:
 
         # 3. Time-based vs semantic retrieval (scoped to ready embeddings only)
         time_range = _detect_time(query)
+        gen_query = query
 
         try:
             if time_range:
+                focus = time_range.get("focus")
+                if focus is not None:
+                    gen_query = (
+                        f"{query}\n\n"
+                        f"(Focus on what is visible or happening around t={focus}s. "
+                        f"Context may cover nearby seconds.)"
+                    )
                 segments = self.collection_manager.query_time_range(
                     time_range["start"],
                     time_range["end"],
                     artifact_ids=scoped_ids,
                 )
                 if not segments:
-                    yield "No video content found for that time range in your ready uploads."
-                    return
-                context = "\n\n".join(segments)
+                    # Fall back to semantic retrieval if the time window is empty
+                    retrieved = self.hybrid_retriever.retrieve_with_confidence(
+                        query, artifact_ids=scoped_ids
+                    )
+                    if not retrieved:
+                        yield "No video content found for that time range in your ready uploads."
+                        return
+                    chunks = [r["text"] for r in retrieved]
+                    context = self.context_builder.build(chunks)
+                else:
+                    context = "\n\n".join(segments)
             else:
                 retrieved = self.hybrid_retriever.retrieve_with_confidence(
                     query, artifact_ids=scoped_ids
@@ -259,7 +275,7 @@ class QueryPipeline:
         # 4. Stream generation tokens
         full_answer = ""
         try:
-            for token in self.generator.stream_generate(query, context):
+            for token in self.generator.stream_generate(gen_query, context):
                 full_answer += token
                 yield token
         except Exception as e:

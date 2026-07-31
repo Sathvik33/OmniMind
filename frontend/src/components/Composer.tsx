@@ -30,9 +30,9 @@ export function Composer({ disabled, uploading, jobLabel, onSend, onUpload }: Pr
         {jobLabel ? (
           <motion.div
             className="composer__status"
-            initial={{ opacity: 0, y: 8 }}
+            initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 6 }}
+            exit={{ opacity: 0, y: 4 }}
           >
             <span className="pulse-dot" />
             {jobLabel}
@@ -47,7 +47,7 @@ export function Composer({ disabled, uploading, jobLabel, onSend, onUpload }: Pr
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
           >
             <button
               type="button"
@@ -55,8 +55,8 @@ export function Composer({ disabled, uploading, jobLabel, onSend, onUpload }: Pr
               disabled={uploading}
               onClick={() => fileRef.current?.click()}
             >
-              <strong>{uploading ? "Uploading…" : "Drop or choose a file"}</strong>
-              <span>PDF, DOCX, images, or video</span>
+              <strong>{uploading ? "Uploading…" : "Choose a file"}</strong>
+              <span>PDF, Word, slides, images, or video</span>
             </button>
             <input
               ref={fileRef}
@@ -92,10 +92,10 @@ export function Composer({ disabled, uploading, jobLabel, onSend, onUpload }: Pr
           disabled={disabled || uploading}
           placeholder={
             uploading
-              ? "Wait for embedding to finish…"
+              ? "Hang on while the file is prepared…"
               : disabled
-                ? "Upload a file and wait for embedding…"
-                : "Ask about your uploaded content…"
+                ? "Upload a file first, then ask…"
+                : "Ask about what you uploaded…"
           }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {

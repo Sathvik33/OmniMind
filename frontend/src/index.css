@@ -1,21 +1,24 @@
 :root {
-  --ink: #0c1219;
-  --ink-2: #121a24;
-  --ink-3: #1a2433;
-  --fog: #8b9bb0;
-  --paper: #e8eef5;
-  --paper-dim: #c5d0de;
-  --teal: #2dd4bf;
-  --teal-dim: #1a9e8f;
-  --sand: #d4a574;
-  --sand-soft: rgba(212, 165, 116, 0.18);
-  --line: rgba(232, 238, 245, 0.1);
-  --danger: #e07a6a;
-  --ok: #6bcb9a;
-  --font-display: "Syne", sans-serif;
-  --font-body: "Manrope", sans-serif;
-  --radius: 12px;
+  --paper: #f3efe6;
+  --paper-2: #ebe6db;
+  --ink: #1c2420;
+  --ink-soft: #3d4a44;
+  --muted: #6d7a73;
+  --line: rgba(28, 36, 32, 0.12);
+  --line-strong: rgba(28, 36, 32, 0.2);
+  --forest: #1e3a34;
+  --forest-mid: #2f564c;
+  --brass: #9a7b4f;
+  --brass-soft: rgba(154, 123, 79, 0.14);
+  --danger: #b54a3c;
+  --danger-soft: rgba(181, 74, 60, 0.1);
+  --ok: #3d7a5c;
+  --ok-soft: rgba(61, 122, 92, 0.12);
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Figtree", system-ui, sans-serif;
+  --radius: 10px;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --shadow: 0 1px 2px rgba(28, 36, 32, 0.04), 0 8px 24px rgba(28, 36, 32, 0.06);
 }
 
 *,
@@ -33,8 +36,8 @@ body,
 body {
   margin: 0;
   font-family: var(--font-body);
-  color: var(--paper);
-  background: var(--ink);
+  color: var(--ink);
+  background: var(--paper);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -55,8 +58,8 @@ a {
 }
 
 ::selection {
-  background: rgba(45, 212, 191, 0.35);
-  color: var(--paper);
+  background: rgba(47, 86, 76, 0.22);
+  color: var(--ink);
 }
 
 .app-shell {
