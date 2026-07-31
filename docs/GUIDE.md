@@ -28,7 +28,7 @@ uvicorn backend.app.main:app --reload --reload-dir backend
 
 # T3 — worker
 .\venv\Scripts\activate
-celery -A backend.app.tasks.celery_app.celery_app worker --loglevel=info
+celery -A backend.app.worker.celery_app worker --loglevel=info
 
 # T4 — UI
 cd frontend

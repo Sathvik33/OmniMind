@@ -162,7 +162,7 @@ pip install -r backend/requirements.txt
 uvicorn backend.app.main:app --reload --reload-dir backend
 
 # Celery (separate terminal) — required for uploads to finish
-celery -A backend.app.tasks.celery_app.celery_app worker --loglevel=info
+celery -A backend.app.worker.celery_app worker --loglevel=info
 ```
 
 Interactive OpenAPI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
@@ -454,7 +454,10 @@ Aegis/
 └── readme.md
 ```
 
-More detail: [`docs/GUIDE.md`](docs/GUIDE.md) · [`docs/vector_storage_migration_path.md`](docs/vector_storage_migration_path.md)
+More detail:
+
+- [`backend/README.md`](backend/README.md) — **how & why** the backend is designed (chunking/embedding per modality)
+- [`docs/GUIDE.md`](docs/GUIDE.md) · [`docs/vector_storage_migration_path.md`](docs/vector_storage_migration_path.md)
 
 ---
 
