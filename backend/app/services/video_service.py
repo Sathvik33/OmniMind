@@ -1,265 +1,466 @@
 """
-VideoService — Optimized video ingestion for AEGIS v3.0.
+VideoService — cloud-first Video RAG for AEGIS.
 
-Production strategy:
-  1. Sample 1 keyframe every N seconds (default 10s, was 2s)
-  2. Scene-change detection via pixel diff (skip near-duplicate frames)
-  3. Describe each keyframe using GroqVisionService (cloud, fast)
-  4. Merge consecutive identical-scene segments to reduce redundancy
-  5. Store in PostgreSQL vector_embeddings table (text + vision embeddings)
+Local: OpenCV seek + histogram scene sampling, ffmpeg (via GroqASRService).
+Cloud: Groq Whisper ASR + capped Groq vision captions (free-tier safe).
 
-
-Why 10s intervals?
-  - 2s = 30 API calls/minute for a 1-min video → rate limits + slow
-  - 10s = 6 API calls/minute → fast, still fine-grained enough for RAG
-
-Production systems (YouTube, Netflix, Google Photos) use:
-  - Scene boundary detection (histogram diff, optical flow)
-  - Shot-level captioning (1 caption per scene, not per frame)
-  - Parallel processing across scenes (concurrent API calls)
-  - We implement all three here.
+Returns segment dicts for the Celery ingestion pipeline to embed into pgvector.
+Does not write Chroma or touch FastAPI app.state.
 """
 
-import cv2
-import os
-import uuid
-import logging
+from __future__ import annotations
+
 import concurrent.futures
+import logging
+import os
+import re
+import tempfile
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import Callable, Dict, List, Optional, Tuple
+
+import cv2
 
 from backend.app.core.config import (
     DATA_DIR,
+    VIDEO_ASR_ENABLED,
     VIDEO_FRAME_INTERVAL_SEC,
+    VIDEO_MAX_KEYFRAMES,
     VIDEO_SCENE_DIFF_THRESHOLD,
+    VIDEO_VISION_ENABLED,
 )
 
 logger = logging.getLogger(__name__)
 
-# Max concurrent vision API calls (avoids Groq rate limits)
-_MAX_WORKERS = 3
+_MAX_VISION_WORKERS = 2
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+# Merge short Whisper segments into ~30s windows for RAG chunk quality
+_ASR_WINDOW_SEC = 30
 
 
 class VideoService:
     """
-    Optimized video ingestion pipeline.
+    Build timed video segments for pgvector ingest.
 
     Flow:
-      video → keyframe extraction (every 10s) → scene-change filter
-            → parallel Groq vision captioning → segment merging
-            → ChromaDB (text + multimodal collections)
+      probe → Groq ASR (optional) → seek keyframes → capped vision captions
+            → merge ASR + nearest caption → return segments
     """
 
-    def __init__(self, vision_service, collection_manager):
-        self.vision_service     = vision_service
-        self.collection_manager = collection_manager
+    def __init__(self, vision_service=None):
+        self.vision_service = vision_service
+        self._temp_files: List[str] = []
 
-    # ── Public ─────────────────────────────────────────────────────────────────
-
-    def process(self, video_path: str, source_name: str, job_id: str, app) -> None:
+    def process(
+        self,
+        file_path: str,
+        source_name: str,
+        vision_service=None,
+        notify: Optional[Callable[[str], None]] = None,
+    ) -> List[Dict]:
         """
-        Main entry point — called as a FastAPI background task.
-        Processes the video and stores results in ChromaDB.
+        Process a local video file into segment dicts:
+
+          {
+            text, start, end, frame_path?, has_asr, has_visual
+          }
+
+        Caller embeds/stores and must not rely on Chroma.
         """
-        app.state.video_jobs[job_id] = "processing"
-        logger.info(f"[VideoService] Starting: {source_name} (job={job_id})")
+        if vision_service is not None:
+            self.vision_service = vision_service
+        self._temp_files = []
 
-        try:
-            # 1. Extract keyframes
-            keyframes = self._extract_keyframes(video_path)
-            if not keyframes:
-                logger.warning(f"[VideoService] No keyframes extracted from {source_name}")
-                app.state.video_jobs[job_id] = "completed"
-                return
+        def _notify(stage: str):
+            if notify:
+                notify(stage)
 
-            logger.info(f"[VideoService] Extracted {len(keyframes)} keyframes")
-
-            # 2. Caption keyframes in parallel (Groq cloud — fast)
-            captions = self._caption_frames_parallel(keyframes)
-
-            # 3. Merge into segments
-            segments = self._merge_segments(captions, video_path)
-
-            # 4. Store in ChromaDB
-            if segments:
-                documents = [s["text"] for s in segments]
-                ids       = [str(uuid.uuid4()) for _ in segments]
-                metadatas = [
-                    {
-                        "source":     source_name,
-                        "modality":   "video",
-                        "start_time": s["start"],
-                        "end_time":   s["end"],
-                        "frame_count": s.get("frame_count", 1),
-                    }
-                    for s in segments
-                ]
-                self.collection_manager.add_documents(documents, ids, metadatas)
-                logger.info(f"[VideoService] Stored {len(segments)} segments for {source_name}")
-
-            app.state.video_jobs[job_id] = "completed"
-
-        except Exception as e:
-            logger.error(f"[VideoService] Failed: {e}")
-            app.state.video_jobs[job_id] = f"failed: {e}"
-
-        finally:
-            # Clean up temp files
-            self._cleanup_temp_frames(job_id)
-
-    # ── Private: Keyframe Extraction ───────────────────────────────────────────
-
-    def _extract_keyframes(self, video_path: str) -> List[Tuple[int, str]]:
-        """
-        Extract one keyframe every VIDEO_FRAME_INTERVAL_SEC seconds.
-        Applies scene-change detection to skip near-duplicate frames.
-
-        Returns: list of (timestamp_sec, temp_image_path) tuples.
-        """
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration_sec = total_frames / fps
-
-        frame_interval = max(1, int(fps * VIDEO_FRAME_INTERVAL_SEC))
+        _notify("PARSING")
+        duration = self.probe_duration(file_path)
         logger.info(
-            f"[VideoService] fps={fps:.1f}, duration={duration_sec:.0f}s, "
-            f"sampling every {VIDEO_FRAME_INTERVAL_SEC}s ({frame_interval} frames)"
+            "[VideoService] %s duration=%.1fs asr=%s vision=%s",
+            source_name,
+            duration,
+            VIDEO_ASR_ENABLED,
+            VIDEO_VISION_ENABLED,
         )
 
-        keyframes: List[Tuple[int, str]] = []
-        prev_frame = None
-        frame_count = 0
+        _notify("VISION_CAPTIONING")
+        asr_segments: List[Dict] = []
+        if VIDEO_ASR_ENABLED:
+            asr_segments = self._run_asr(file_path)
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            if frame_count % frame_interval == 0:
-                timestamp_sec = int(frame_count / fps)
-
-                # Scene-change filter: skip if too similar to previous frame
-                if prev_frame is not None:
-                    diff = cv2.absdiff(
-                        cv2.resize(prev_frame, (64, 64)),
-                        cv2.resize(frame, (64, 64)),
-                    ).mean()
-                    if diff < VIDEO_SCENE_DIFF_THRESHOLD:
-                        frame_count += 1
-                        continue  # near-duplicate, skip
-
-                # Save keyframe to temp file (tagged with job info)
-                temp_path = str(DATA_DIR / f"_frame_{frame_count}_{timestamp_sec}.jpg")
-                cv2.imwrite(temp_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                keyframes.append((timestamp_sec, temp_path))
-                prev_frame = frame
-
-            frame_count += 1
-
-        cap.release()
-        return keyframes
-
-    # ── Private: Parallel Captioning ──────────────────────────────────────────
-
-    def _caption_frames_parallel(
-        self, keyframes: List[Tuple[int, str]]
-    ) -> List[Tuple[int, str]]:
-        """
-        Caption all keyframes concurrently using a thread pool.
-        Returns: list of (timestamp_sec, caption) sorted by timestamp.
-        """
-        results: List[Tuple[int, str]] = []
-
-        def describe_one(item: Tuple[int, str]) -> Tuple[int, str]:
-            ts, path = item
+        captions: List[Tuple[int, str, Optional[str]]] = []  # ts, caption, frame_path
+        vision_degraded = False
+        if VIDEO_VISION_ENABLED and self.vision_service is not None:
+            keyframes = self._extract_keyframes(file_path, duration)
+            logger.info("[VideoService] Extracted %s keyframes", len(keyframes))
             try:
-                caption = self.vision_service.describe(path)
-                return (ts, caption)
+                captions = self._caption_frames(keyframes, keep_paths=True)
+            except _VisionRateLimitError as e:
+                self._cleanup_paths([p for _, p in keyframes])
+                if asr_segments:
+                    logger.warning(
+                        "[VideoService] Vision rate-limited; degrading to ASR-only: %s", e
+                    )
+                    vision_degraded = True
+                else:
+                    raise
             except Exception as e:
-                logger.warning(f"Caption failed at t={ts}s: {e}")
-                return (ts, "")
-            finally:
-                # Remove temp file immediately after captioning
-                try:
-                    os.remove(path)
-                except Exception:
-                    pass
+                if self._is_rate_limit(e):
+                    self._cleanup_paths([p for _, p in keyframes])
+                    if asr_segments:
+                        logger.warning(
+                            "[VideoService] Vision 429; degrading to ASR-only: %s", e
+                        )
+                        vision_degraded = True
+                    else:
+                        raise
+                else:
+                    logger.warning("[VideoService] Vision captioning failed: %s", e)
+                    self._cleanup_paths([p for _, p in keyframes])
+        elif VIDEO_VISION_ENABLED and self.vision_service is None:
+            logger.warning("[VideoService] VIDEO_VISION_ENABLED but no vision_service")
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-            futures = {executor.submit(describe_one, kf): kf for kf in keyframes}
-            for future in concurrent.futures.as_completed(futures):
-                ts, caption = future.result()
-                if caption:
-                    results.append((ts, caption))
+        segments = self._merge_asr_and_captions(
+            asr_segments=asr_segments,
+            captions=captions,
+            source_name=source_name,
+            duration=duration,
+        )
 
-        # Sort by timestamp
-        results.sort(key=lambda x: x[0])
-        return results
-
-    # ── Private: Segment Merging ───────────────────────────────────────────────
-
-    def _merge_segments(
-        self,
-        captions: List[Tuple[int, str]],
-        video_path: str,
-    ) -> List[dict]:
-        """
-        Merge consecutive frames with identical/very-similar captions
-        into single segments with start/end timestamps.
-
-        Returns list of {text, start, end, frame_count} dicts.
-        """
-        if not captions:
-            return []
-
-        segments = []
-        seg_text   = captions[0][1]
-        seg_start  = captions[0][0]
-        seg_end    = captions[0][0] + VIDEO_FRAME_INTERVAL_SEC
-        seg_frames = 1
-
-        for ts, caption in captions[1:]:
-            # Simple similarity: if captions share >60% tokens → same scene
-            if self._similar(caption, seg_text):
-                seg_end    = ts + VIDEO_FRAME_INTERVAL_SEC
-                seg_frames += 1
-            else:
-                segments.append({
-                    "text":        seg_text,
-                    "start":       seg_start,
-                    "end":         seg_end,
-                    "frame_count": seg_frames,
-                })
-                seg_text   = caption
-                seg_start  = ts
-                seg_end    = ts + VIDEO_FRAME_INTERVAL_SEC
-                seg_frames = 1
-
-        # Flush last segment
-        segments.append({
-            "text":        seg_text,
-            "start":       seg_start,
-            "end":         seg_end,
-            "frame_count": seg_frames,
-        })
+        if not segments:
+            logger.warning(
+                "[VideoService] No segments produced for %s (vision_degraded=%s)",
+                source_name,
+                vision_degraded,
+            )
 
         return segments
 
-    @staticmethod
-    def _similar(a: str, b: str, threshold: float = 0.5) -> bool:
-        """Token-overlap similarity check (no heavy models needed)."""
-        tokens_a = set(a.lower().split())
-        tokens_b = set(b.lower().split())
-        if not tokens_a or not tokens_b:
-            return False
-        overlap = len(tokens_a & tokens_b) / max(len(tokens_a), len(tokens_b))
-        return overlap >= threshold
+    # ── Probe ──────────────────────────────────────────────────────────────────
 
-    def _cleanup_temp_frames(self, job_id: str) -> None:
-        """Remove any leftover temp frame files."""
+    @staticmethod
+    def probe_duration(video_path: str) -> float:
+        cap = cv2.VideoCapture(video_path)
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if fps <= 0:
+                fps = 25.0
+            if total > 0:
+                return total / fps
+            # Fallback: some containers report 0 frame count
+            return 0.0
+        finally:
+            cap.release()
+
+    # ── ASR ────────────────────────────────────────────────────────────────────
+
+    def _run_asr(self, video_path: str) -> List[Dict]:
+        try:
+            from backend.app.services.groq_asr_service import GroqASRService
+
+            asr = GroqASRService()
+            segments = asr.transcribe(video_path)
+            logger.info("[VideoService] ASR returned %s segments", len(segments))
+            return segments
+        except Exception as e:
+            if self._is_rate_limit(e):
+                # Let pipeline decide retry vs degrade — re-raise typed signal
+                raise
+            logger.warning("[VideoService] ASR failed (continuing without speech): %s", e)
+            return []
+
+    # ── Keyframes (seek-based) ─────────────────────────────────────────────────
+
+    def _extract_keyframes(
+        self, video_path: str, duration: float
+    ) -> List[Tuple[int, str]]:
+        """
+        Seek to candidate timestamps; keep frames with histogram/mean change.
+        Caps at VIDEO_MAX_KEYFRAMES. Falls back to fixed interval if few cuts.
+        """
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open video: {video_path}")
+
+        try:
+            interval = max(1, VIDEO_FRAME_INTERVAL_SEC)
+            if duration <= 0:
+                # Probe failed — sample first few minutes by interval guesses
+                candidates = list(range(0, interval * VIDEO_MAX_KEYFRAMES * 2, interval))
+            else:
+                candidates = list(range(0, int(duration) + 1, interval))
+                # Also sample midpoints if very short
+                if len(candidates) < 2 and duration > 1:
+                    candidates = [0, int(duration / 2)]
+
+            keyframes: List[Tuple[int, str]] = []
+            prev_hist = None
+            prev_small = None
+            temp_dir = tempfile.mkdtemp(prefix="video_frames_")
+            self._temp_files.append(temp_dir)
+
+            for ts in candidates:
+                if len(keyframes) >= VIDEO_MAX_KEYFRAMES:
+                    break
+                cap.set(cv2.CAP_PROP_POS_MSEC, float(ts) * 1000.0)
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    continue
+
+                small = cv2.resize(frame, (64, 64))
+                hist = cv2.calcHist(
+                    [small], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256]
+                )
+                cv2.normalize(hist, hist)
+
+                if prev_hist is not None and prev_small is not None:
+                    # Higher correlation → more similar; skip near-duplicates
+                    corr = cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CORREL)
+                    mean_diff = float(cv2.absdiff(small, prev_small).mean())
+                    if corr > 0.92 and mean_diff < VIDEO_SCENE_DIFF_THRESHOLD:
+                        continue
+
+                out_path = os.path.join(temp_dir, f"frame_{ts:06d}.jpg")
+                cv2.imwrite(out_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                keyframes.append((int(ts), out_path))
+                prev_hist = hist
+                prev_small = small
+
+            # If scene filter was too aggressive, force interval samples up to cap
+            if len(keyframes) < min(3, VIDEO_MAX_KEYFRAMES) and duration > 0:
+                self._cleanup_paths([p for _, p in keyframes])
+                keyframes = []
+                step = max(interval, int(duration / max(1, VIDEO_MAX_KEYFRAMES)))
+                for ts in range(0, int(duration) + 1, step):
+                    if len(keyframes) >= VIDEO_MAX_KEYFRAMES:
+                        break
+                    cap.set(cv2.CAP_PROP_POS_MSEC, float(ts) * 1000.0)
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        continue
+                    out_path = os.path.join(temp_dir, f"frame_{ts:06d}.jpg")
+                    cv2.imwrite(out_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    keyframes.append((int(ts), out_path))
+
+            return keyframes[:VIDEO_MAX_KEYFRAMES]
+        finally:
+            cap.release()
+
+    # ── Captions ───────────────────────────────────────────────────────────────
+
+    def _caption_frames(
+        self,
+        keyframes: List[Tuple[int, str]],
+        keep_paths: bool = True,
+    ) -> List[Tuple[int, str, Optional[str]]]:
+        """Return (timestamp, caption, frame_path|None) sorted by time."""
+        if not keyframes or self.vision_service is None:
+            return []
+
+        results: List[Tuple[int, str, Optional[str]]] = []
+        rate_limited = False
+
+        def describe_one(item: Tuple[int, str]) -> Tuple[int, str, Optional[str]]:
+            nonlocal rate_limited
+            ts, path = item
+            try:
+                caption = self.vision_service.describe(path)
+                caption = _THINK_RE.sub("", caption or "").strip()
+                if self._is_rate_limit_message(caption):
+                    rate_limited = True
+                    return (ts, "", path if keep_paths else None)
+                return (ts, caption, path if keep_paths else None)
+            except Exception as e:
+                if self._is_rate_limit(e):
+                    rate_limited = True
+                logger.warning("Caption failed at t=%ss: %s", ts, e)
+                return (ts, "", path if keep_paths else None)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_VISION_WORKERS) as pool:
+            futures = [pool.submit(describe_one, kf) for kf in keyframes]
+            for fut in concurrent.futures.as_completed(futures):
+                results.append(fut.result())
+
+        if rate_limited and not any(c for _, c, _ in results):
+            raise _VisionRateLimitError("Groq vision rate limited (429)")
+
+        # Drop empty captions; cleanup unused frame files
+        kept: List[Tuple[int, str, Optional[str]]] = []
+        for ts, caption, path in results:
+            if caption:
+                kept.append((ts, caption, path))
+            elif path and not keep_paths:
+                self._cleanup_paths([path])
+            elif path and not caption:
+                # Keep path only if we had a caption; else cleanup
+                self._cleanup_paths([path])
+
+        kept.sort(key=lambda x: x[0])
+        return kept
+
+    # ── Merge ──────────────────────────────────────────────────────────────────
+
+    def _merge_asr_and_captions(
+        self,
+        asr_segments: List[Dict],
+        captions: List[Tuple[int, str, Optional[str]]],
+        source_name: str,
+        duration: float,
+    ) -> List[Dict]:
+        windows = self._window_asr(asr_segments, duration)
+
+        if windows:
+            segments: List[Dict] = []
+            for win in windows:
+                nearest = self._nearest_caption(win["start"], win["end"], captions)
+                visual = nearest[1] if nearest else ""
+                frame_path = nearest[2] if nearest else None
+                spoken = win["text"].strip()
+                parts = [f"[Video: {source_name}] t={win['start']}–{win['end']}"]
+                if spoken:
+                    parts.append(f"Spoken: {spoken}")
+                if visual:
+                    parts.append(f"Visual: {visual}")
+                if len(parts) == 1:
+                    continue
+                segments.append(
+                    {
+                        "text": "\n".join(parts),
+                        "start": int(win["start"]),
+                        "end": int(win["end"]),
+                        "frame_path": frame_path,
+                        "has_asr": bool(spoken),
+                        "has_visual": bool(visual),
+                    }
+                )
+            # Unused caption frames
+            used = {s["frame_path"] for s in segments if s.get("frame_path")}
+            for _, _, path in captions:
+                if path and path not in used:
+                    self._cleanup_paths([path])
+            return segments
+
+        # Caption-only fallback (no ASR)
+        segments = []
+        for i, (ts, caption, frame_path) in enumerate(captions):
+            end = (
+                captions[i + 1][0]
+                if i + 1 < len(captions)
+                else int(ts + VIDEO_FRAME_INTERVAL_SEC)
+            )
+            if duration > 0:
+                end = min(end, int(duration))
+            end = max(end, ts + 1)
+            segments.append(
+                {
+                    "text": (
+                        f"[Video: {source_name}] t={ts}–{end}\n"
+                        f"Visual: {caption}"
+                    ),
+                    "start": int(ts),
+                    "end": int(end),
+                    "frame_path": frame_path,
+                    "has_asr": False,
+                    "has_visual": True,
+                }
+            )
+        return segments
+
+    def _window_asr(self, asr_segments: List[Dict], duration: float) -> List[Dict]:
+        if not asr_segments:
+            return []
+        windows: List[Dict] = []
+        buf_text: List[str] = []
+        buf_start = int(asr_segments[0]["start"])
+        buf_end = int(asr_segments[0]["end"])
+
+        for seg in asr_segments:
+            start = int(seg.get("start", 0))
+            end = int(seg.get("end", start + 1))
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            if not buf_text:
+                buf_start, buf_end = start, end
+                buf_text = [text]
+                continue
+            if end - buf_start <= _ASR_WINDOW_SEC:
+                buf_text.append(text)
+                buf_end = max(buf_end, end)
+            else:
+                windows.append(
+                    {"start": buf_start, "end": max(buf_end, buf_start + 1), "text": " ".join(buf_text)}
+                )
+                buf_start, buf_end = start, end
+                buf_text = [text]
+
+        if buf_text:
+            windows.append(
+                {"start": buf_start, "end": max(buf_end, buf_start + 1), "text": " ".join(buf_text)}
+            )
+
+        if duration > 0 and windows:
+            windows[-1]["end"] = max(windows[-1]["end"], min(int(duration), windows[-1]["end"]))
+        return windows
+
+    @staticmethod
+    def _nearest_caption(
+        start: int,
+        end: int,
+        captions: List[Tuple[int, str, Optional[str]]],
+    ) -> Optional[Tuple[int, str, Optional[str]]]:
+        if not captions:
+            return None
+        mid = (start + end) / 2.0
+        # Prefer captions inside the window; else nearest by midpoint
+        inside = [c for c in captions if start <= c[0] <= end]
+        pool = inside or captions
+        return min(pool, key=lambda c: abs(c[0] - mid))
+
+    # ── Cleanup helpers ────────────────────────────────────────────────────────
+
+    def cleanup_segment_files(self, segments: List[Dict]) -> None:
+        paths = [s["frame_path"] for s in segments if s.get("frame_path")]
+        self._cleanup_paths(paths)
+        for p in list(self._temp_files):
+            if os.path.isdir(p):
+                try:
+                    import shutil
+
+                    shutil.rmtree(p, ignore_errors=True)
+                except Exception:
+                    pass
+            self._temp_files.clear()
+        # Legacy DATA_DIR leftovers
         try:
             for f in Path(DATA_DIR).glob("_frame_*.jpg"):
                 f.unlink(missing_ok=True)
         except Exception:
             pass
+
+    @staticmethod
+    def _cleanup_paths(paths: List[str]) -> None:
+        for p in paths:
+            if not p:
+                continue
+            try:
+                if os.path.isfile(p):
+                    os.remove(p)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _is_rate_limit(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "429" in msg or "rate limit" in msg or "rate_limit" in msg
+
+    @staticmethod
+    def _is_rate_limit_message(text: str) -> bool:
+        t = (text or "").lower()
+        return "429" in t or "rate limit" in t
+
+
+class _VisionRateLimitError(Exception):
+    pass

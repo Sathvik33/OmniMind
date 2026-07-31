@@ -3,6 +3,7 @@ const API_BASE = import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8000";
 export type JobStatus = {
   job_id: number;
   status: string;
+  artifact_id?: number;
   failed_stage?: string | null;
   error_message?: string | null;
 };
@@ -35,11 +36,15 @@ export async function streamQuery(
   query: string,
   onToken: (chunk: string) => void,
   signal?: AbortSignal,
+  artifactIds?: number[],
 ): Promise<string> {
   const res = await fetch(`${API_BASE}/query-stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({
+      query,
+      artifact_ids: artifactIds?.length ? artifactIds : undefined,
+    }),
     signal,
   });
   if (!res.ok || !res.body) {

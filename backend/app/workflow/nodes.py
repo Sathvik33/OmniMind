@@ -129,10 +129,13 @@ def make_temporal_retrieve(collection_manager):
     def temporal_retrieve(state: OmniMindState) -> Dict[str, Any]:
         t0 = time.perf_counter()
         tr = state.get("time_range") or {"start": 0, "end": 0}
+        artifact_ids = state.get("artifact_ids") or None
         segments = []
         if collection_manager:
             try:
-                segments = collection_manager.query_time_range(tr["start"], tr["end"])
+                segments = collection_manager.query_time_range(
+                    tr["start"], tr["end"], artifact_ids=artifact_ids
+                )
             except Exception:
                 pass
 
@@ -147,6 +150,7 @@ def make_temporal_retrieve(collection_manager):
                 "type": "temporal",
                 "time_range": tr,
                 "results_count": len(segments),
+                "artifact_ids": artifact_ids or [],
                 "latency_ms": latency["temporal_retrieve"],
             },
             "latency_ms": latency,
@@ -162,7 +166,10 @@ def make_hybrid_retrieve(hybrid_retriever):
 
     def hybrid_retrieve(state: OmniMindState) -> Dict[str, Any]:
         t0 = time.perf_counter()
-        results = hybrid_retriever.retrieve(state["query"], include_scores=True)
+        artifact_ids = state.get("artifact_ids") or None
+        results = hybrid_retriever.retrieve(
+            state["query"], include_scores=True, artifact_ids=artifact_ids
+        )
 
         # Separate text and metadata
         if results and isinstance(results[0], dict):

@@ -175,7 +175,7 @@ Converts raw multimodal files into structured, embeddable content. Each modality
 
 - **Documents** → format-specific loader → LangChain chunker → GPU embeddings → ChromaDB
 - **Images** → LLaVA vision model → natural language description → GPU embeddings → ChromaDB
-- **Videos** → OpenCV frame extraction (2s intervals) → `cv2.absdiff` frame deduplication → LLaVA captioning → temporal segment merging → stored with `start_time` / `end_time` metadata
+- **Videos** → ffmpeg audio extract → Groq Whisper ASR → OpenCV seek/histogram keyframes (capped) → Groq vision captions → merge into timed segments → pgvector + `temporal` metadata
 
 #### 3. Vision Service — `backend/app/services/`
 
@@ -183,11 +183,11 @@ Manages all vision-model operations end-to-end:
 
 | Component | Implementation |
 |---|---|
-| Frame Extraction | OpenCV at 2-second intervals |
-| Frame Deduplication | `cv2.absdiff` pixel-level difference threshold |
-| Caption Generation | LLaVA 1.5-7B (4-bit / 8-bit quantized via `bitsandbytes`) |
-| Temporal Merging | Adjacent segments with similar captions fused into single entries |
-| Async Execution | FastAPI `BackgroundTasks` — never blocks the API thread |
+| Audio / ASR | ffmpeg extract + Groq Whisper (`whisper-large-v3-turbo`) |
+| Frame Extraction | OpenCV seek + histogram sampling (max `VIDEO_MAX_KEYFRAMES`) |
+| Caption Generation | Groq vision (`qwen/qwen3.6-27b`), capped; degrade to ASR-only on 429 |
+| Temporal Storage | pgvector + `artifact_metadata.key=temporal` |
+| Async Execution | Celery `process_ingestion_task` |
 
 #### 4. Embedding Layer — `backend/app/embeddings/`
 
@@ -300,6 +300,8 @@ venv\Scripts\activate
 ```bash
 pip install -r requirements.txt
 ```
+
+**System dependency for Video RAG:** install [ffmpeg](https://ffmpeg.org/) and ensure it is on your `PATH` (used to extract audio for Groq Whisper ASR). On Windows: `winget install ffmpeg` or `choco install ffmpeg`.
 
 ### 4. Pull and Start the LLM
 

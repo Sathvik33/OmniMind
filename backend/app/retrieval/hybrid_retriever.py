@@ -13,7 +13,7 @@ No LangChain dependencies - pure Python + sentence-transformers.
 
 import logging
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from backend.app.retrieval.pgvector_store import PgVectorStore
 from backend.app.retrieval.bm25_store import BM25Store
@@ -23,7 +23,7 @@ from backend.app.core.config import RETRIEVAL_TOP_K, RERANKER_TOP_K, RRF_K
 logger = logging.getLogger(__name__)
 
 _META_PREFIX = re.compile(
-    r"^(?:\[(?:Document|Image Document|Image File|Hierarchy|Contains Table|Contains Image):[^\]]*\]\s*)+",
+    r"^(?:\[(?:Document|Image Document|Image File|Video|Hierarchy|Contains Table|Contains Image):[^\]]*\]\s*)+",
     re.MULTILINE,
 )
 
@@ -113,27 +113,12 @@ class HybridRetriever:
         final_k: int = RERANKER_TOP_K,
         include_scores: bool = True,
         adaptive_weights: bool = True,
+        artifact_ids: Optional[List[int]] = None,
     ) -> List[str] | List[Dict[str, Any]]:
         """
         Full hybrid retrieval pipeline with fusion and reranking.
 
-        Pipeline:
-          1. BM25 search (keyword-based)
-          2. Dense semantic search (embedding-based)
-          3. RRF fusion (combine rank positions)
-          4. Cross-encoder reranking (joint scoring)
-          5. Multimodal fusion (image/video cross-modal)
-          6. Final deduplication
-
-        Args:
-            query: Search query
-            top_k: Candidate pool before reranking
-            final_k: Final results returned
-            include_scores: Return with relevance scores
-            adaptive_weights: Adjust BM25/dense weights by query type
-
-        Returns:
-            List of document texts (or dicts with metadata if include_scores=True)
+        When artifact_ids is set, only vectors from those uploads are used.
         """
         # Get adaptive weights
         bm25_weight, dense_weight = (
@@ -144,7 +129,9 @@ class HybridRetriever:
         bm25_results = []
         if self.bm25_store.retriever is not None:
             try:
-                bm25_results = _filter_weak_docs(self.bm25_store.search(query, top_k=top_k))
+                bm25_results = _filter_weak_docs(
+                    self.bm25_store.search(query, top_k=top_k, artifact_ids=artifact_ids)
+                )
             except Exception as e:
                 logger.warning(f"BM25 search failed (falling back to dense only): {e}")
                 bm25_results = []
@@ -152,8 +139,15 @@ class HybridRetriever:
         # 2. Dense Semantic Search (embedding-based via pgvector)
         dense_results = []
         try:
-            # Fetch extra candidates so filtering weak micro-chunks still leaves enough
-            pg_res = self.pg_store.search(query, top_k=max(top_k * 2, top_k + 10))
+            # Scoped uploads: search all modalities; otherwise documents only
+            dense_modality = None if artifact_ids else "document"
+            pg_res = self.pg_store.search(
+                query,
+                modality=dense_modality,
+                embedding_type="text",
+                top_k=max(top_k * 2, top_k + 10),
+                artifact_ids=artifact_ids,
+            )
             dense_results = _filter_weak_docs([r["content"] for r in pg_res])[:top_k]
         except Exception as e:
             logger.warning(f"Dense semantic search failed (falling back to BM25 only): {e}")
@@ -176,13 +170,46 @@ class HybridRetriever:
             else []
         )
 
-        # 5. CLIP multimodal cross-modal retrieval via pgvector
+        # 5. Multimodal retrieval via pgvector (images + video text/vision)
         modal_results = []
         try:
-            modal_res = self.pg_store.search(query, modality="image", embedding_type="vision", top_k=max(2, final_k // 2))
-            modal_results = [(r["content"], r.get("score", 0.5)) for r in modal_res if r.get("content")]
+            image_res = self.pg_store.search(
+                query,
+                modality="image",
+                embedding_type="vision",
+                top_k=max(2, final_k // 2),
+                artifact_ids=artifact_ids,
+            )
+            modal_results = [
+                (r["content"], r.get("score", 0.5)) for r in image_res if r.get("content")
+            ]
         except Exception as e:
-            logger.warning(f"Multimodal CLIP search failed: {e}")
+            logger.warning(f"Multimodal image search failed: {e}")
+
+        try:
+            video_text_k = max(2, final_k // 2)
+            video_text = self.pg_store.search(
+                query,
+                modality="video",
+                embedding_type="text",
+                top_k=video_text_k,
+                artifact_ids=artifact_ids,
+            )
+            for r in video_text:
+                if r.get("content"):
+                    modal_results.append((r["content"], r.get("score", 0.5)))
+            video_vis = self.pg_store.search(
+                query,
+                modality="video",
+                embedding_type="vision",
+                top_k=max(1, final_k // 3),
+                artifact_ids=artifact_ids,
+            )
+            for r in video_vis:
+                if r.get("content"):
+                    modal_results.append((r["content"], r.get("score", 0.5)))
+        except Exception as e:
+            logger.warning(f"Multimodal video search failed: {e}")
 
         # 6. Merge results with deduplication
         seen_texts = {doc for doc, _ in reranked_with_scores}
@@ -208,7 +235,11 @@ class HybridRetriever:
         else:
             return [doc for doc, _ in final_results]
 
-    def retrieve_with_confidence(self, query: str) -> List[Dict[str, Any]]:
+    def retrieve_with_confidence(
+        self,
+        query: str,
+        artifact_ids: Optional[List[int]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Retrieve documents with detailed confidence information.
 
@@ -218,7 +249,7 @@ class HybridRetriever:
           - source: 'text' or 'multimodal'
           - explanation: why this result was chosen
         """
-        results = self.retrieve(query, include_scores=True)
+        results = self.retrieve(query, include_scores=True, artifact_ids=artifact_ids)
 
         for result in results:
             score = result["relevance_score"]

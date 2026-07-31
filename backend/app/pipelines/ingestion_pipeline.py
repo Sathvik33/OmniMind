@@ -338,7 +338,130 @@ class MultimodalIngestionPipeline:
             raise RetryableIngestionError(f"Database insertion failed for image artifact: {e}", stage="STORING")
 
     def _process_video(self, db, artifact, file_path, notify: Callable[[str], None]):
+        from backend.app.services.video_service import VideoService
+        from backend.app.services.groq_vision_service import GroqVisionService
+        from backend.app.core.config import VIDEO_VISION_ENABLED, VIDEO_ASR_ENABLED
+
+        video_svc = VideoService()
+        vision = None
+        if VIDEO_VISION_ENABLED:
+            try:
+                vision = GroqVisionService()
+            except Exception as e:
+                logger.warning("Groq vision unavailable for video; ASR-only if enabled: %s", e)
+
+        try:
+            segments = video_svc.process(
+                file_path=file_path,
+                source_name=artifact.filename,
+                vision_service=vision,
+                notify=notify,
+            )
+        except Exception as e:
+            err = str(e).lower()
+            if "429" in err or "rate limit" in err or "rate_limit" in err:
+                raise RetryableIngestionError(
+                    f"Groq ASR/vision rate limit: {e}", stage="VISION_CAPTIONING"
+                )
+            if "ffmpeg" in err:
+                raise NonRetryableIngestionError(
+                    f"ffmpeg required for video ASR: {e}", stage="PARSING"
+                )
+            raise NonRetryableIngestionError(
+                f"Video processing failed: {e}", stage="VISION_CAPTIONING"
+            )
+
+        if not segments:
+            raise NonRetryableIngestionError(
+                f"No searchable video segments from {artifact.filename} "
+                f"(ASR={VIDEO_ASR_ENABLED}, vision={VIDEO_VISION_ENABLED})",
+                stage="VISION_CAPTIONING",
+            )
+
+        max_chunks = int(os.getenv("MAX_INGEST_CHUNKS", "200"))
+        if len(segments) > max_chunks:
+            logger.warning(
+                "Capping video segments from %s to %s for artifact %s",
+                len(segments),
+                max_chunks,
+                artifact.id,
+            )
+            segments = segments[:max_chunks]
+
+        notify("CHUNKING_EMBEDDING")
+        vectors_to_add = []
+        temporal_metas = []
+        try:
+            for idx, seg in enumerate(segments, start=1):
+                text = seg["text"]
+                txt_emb = embedding_service.embed_text(text)
+                vectors_to_add.append(
+                    VectorEmbedding(
+                        artifact_id=artifact.id,
+                        embedding_type="text",
+                        content=text,
+                        embedding=txt_emb,
+                    )
+                )
+
+                frame_path = seg.get("frame_path")
+                if frame_path and os.path.exists(frame_path):
+                    try:
+                        img_emb = embedding_service.embed_image(frame_path)
+                        vectors_to_add.append(
+                            VectorEmbedding(
+                                artifact_id=artifact.id,
+                                embedding_type="vision",
+                                content=text,
+                                embedding=img_emb,
+                            )
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "SigLIP video frame embed failed at t=%s: %s",
+                            seg.get("start"),
+                            e,
+                        )
+
+                temporal_metas.append(
+                    Metadata(
+                        artifact_id=artifact.id,
+                        key="temporal",
+                        value={
+                            "start_time": int(seg["start"]),
+                            "end_time": int(seg["end"]),
+                            "source": artifact.filename,
+                            "has_asr": bool(seg.get("has_asr")),
+                            "has_visual": bool(seg.get("has_visual")),
+                            "content": text,
+                        },
+                    )
+                )
+
+                if idx % 5 == 0:
+                    notify("CHUNKING_EMBEDDING")
+        except Exception as e:
+            raise NonRetryableIngestionError(
+                f"Video embedding failed: {e}", stage="CHUNKING_EMBEDDING"
+            )
+        finally:
+            video_svc.cleanup_segment_files(segments)
+
         notify("STORING")
-        meta = Metadata(artifact_id=artifact.id, key="video_scenes", value=["Scene 1 placeholder"])
-        db.add(meta)
-        db.commit()
+        try:
+            for vec in vectors_to_add:
+                db.add(vec)
+            for meta in temporal_metas:
+                db.add(meta)
+            db.commit()
+            logger.info(
+                "Stored %s video vectors + %s temporal metas for artifact %s",
+                len(vectors_to_add),
+                len(temporal_metas),
+                artifact.id,
+            )
+        except Exception as e:
+            db.rollback()
+            raise RetryableIngestionError(
+                f"Database insertion failed for video artifact: {e}", stage="STORING"
+            )

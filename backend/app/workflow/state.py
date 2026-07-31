@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 class OmniMindState(TypedDict, total=False):
     # ── Input ──────────────────────────────────────────────────────────────────
     query: str                       # raw user query
+    artifact_ids: List[int]          # only answer from these uploaded artifacts
 
     # ── Tracing ────────────────────────────────────────────────────────────────
     run_id: str                      # LangSmith run ID for end-to-end tracing

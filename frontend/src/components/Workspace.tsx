@@ -23,6 +23,8 @@ export function Workspace({ onBack }: Props) {
   const [streaming, setStreaming] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [jobId, setJobId] = useState<number | null>(null);
+  const [pendingArtifactId, setPendingArtifactId] = useState<number | null>(null);
+  const [readyArtifactIds, setReadyArtifactIds] = useState<number[]>([]);
   const [jobLabel, setJobLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -45,21 +47,30 @@ export function Workspace({ onBack }: Props) {
         if (cancelled) return;
         polls += 1;
         const s = (status.status || "").toLowerCase();
-        setJobLabel(`Ingesting · ${s.replaceAll("_", " ")}`);
+        setJobLabel(`Embedding · ${s.replaceAll("_", " ")} — ask after this finishes`);
         if (s === "completed") {
+          const readyId = status.artifact_id ?? pendingArtifactId;
+          if (readyId != null) {
+            setReadyArtifactIds((prev) =>
+              prev.includes(readyId) ? prev : [...prev, readyId],
+            );
+          }
           setJobId(null);
+          setPendingArtifactId(null);
           setJobLabel(null);
           setError(null);
           return;
         }
         if (s === "failed" || s === "dead_letter") {
           setJobId(null);
+          setPendingArtifactId(null);
           setJobLabel(null);
           setError(status.error_message || "Ingestion failed");
           return;
         }
         if (polls >= maxPolls) {
           setJobId(null);
+          setPendingArtifactId(null);
           setJobLabel(null);
           setError("Ingestion is taking too long. Check the Celery worker and retry.");
           return;
@@ -68,6 +79,7 @@ export function Workspace({ onBack }: Props) {
       } catch (e) {
         if (!cancelled) {
           setJobId(null);
+          setPendingArtifactId(null);
           setJobLabel(null);
           setError(e instanceof Error ? e.message : "Could not poll job status");
         }
@@ -77,7 +89,7 @@ export function Workspace({ onBack }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [jobId]);
+  }, [jobId, pendingArtifactId]);
 
   const onUpload = async (file: File) => {
     setError(null);
@@ -85,10 +97,12 @@ export function Workspace({ onBack }: Props) {
     setJobLabel(`Uploading ${file.name}`);
     try {
       const result = await uploadFile(file);
+      setPendingArtifactId(result.artifact_id ?? null);
       setJobId(result.job_id);
-      setJobLabel("Queued for ingestion");
+      setJobLabel("Queued for embedding — retrieval locked until done");
     } catch (e) {
       setJobLabel(null);
+      setPendingArtifactId(null);
       setError(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setUploading(false);
@@ -96,6 +110,15 @@ export function Workspace({ onBack }: Props) {
   };
 
   const onSend = async (text: string) => {
+    if (jobId != null || uploading) {
+      setError("Wait until embedding finishes before asking questions.");
+      return;
+    }
+    if (!readyArtifactIds.length) {
+      setError("Upload a file and wait for embedding to finish before asking.");
+      return;
+    }
+
     setError(null);
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -122,6 +145,7 @@ export function Workspace({ onBack }: Props) {
           );
         },
         controller.signal,
+        readyArtifactIds,
       );
       const finalText = cleanStreamText(raw) || "No response received.";
       setMessages((prev) =>
@@ -143,6 +167,9 @@ export function Workspace({ onBack }: Props) {
     }
   };
 
+  const ingesting = uploading || jobId != null;
+  const canAsk = !streaming && !ingesting && readyArtifactIds.length > 0;
+
   return (
     <motion.section
       className="workspace"
@@ -158,7 +185,11 @@ export function Workspace({ onBack }: Props) {
           <img src="/aegis.svg" alt="" width={28} height={28} />
           <div>
             <strong>AEGIS</strong>
-            <span>Multimodal RAG workspace</span>
+            <span>
+              {readyArtifactIds.length
+                ? `Answering from ${readyArtifactIds.length} ready upload${readyArtifactIds.length === 1 ? "" : "s"}`
+                : "Multimodal RAG workspace"}
+            </span>
           </div>
         </div>
         <button
@@ -167,6 +198,7 @@ export function Workspace({ onBack }: Props) {
           onClick={() => {
             abortRef.current?.abort();
             setMessages([]);
+            setReadyArtifactIds([]);
             setError(null);
           }}
         >
@@ -182,8 +214,8 @@ export function Workspace({ onBack }: Props) {
         {error ? <div className="workspace__error">{error}</div> : null}
 
         <Composer
-          disabled={streaming}
-          uploading={uploading || jobId != null}
+          disabled={!canAsk}
+          uploading={ingesting}
           jobLabel={jobLabel}
           onSend={onSend}
           onUpload={onUpload}

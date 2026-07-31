@@ -52,7 +52,7 @@ export function Composer({ disabled, uploading, jobLabel, onSend, onUpload }: Pr
             <button
               type="button"
               className="upload-drop"
-              disabled={uploading || disabled}
+              disabled={uploading}
               onClick={() => fileRef.current?.click()}
             >
               <strong>{uploading ? "Uploading…" : "Drop or choose a file"}</strong>
@@ -90,7 +90,13 @@ export function Composer({ disabled, uploading, jobLabel, onSend, onUpload }: Pr
           rows={1}
           value={text}
           disabled={disabled || uploading}
-          placeholder="Ask about your uploaded content…"
+          placeholder={
+            uploading
+              ? "Wait for embedding to finish…"
+              : disabled
+                ? "Upload a file and wait for embedding…"
+                : "Ask about your uploaded content…"
+          }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {

@@ -11,7 +11,7 @@ Streaming approach:
   then stream generation tokens directly.
 """
 
-from typing import Dict, Any, Generator as StreamGenerator
+from typing import Dict, Any, Generator as StreamGenerator, List, Optional
 
 
 from backend.app.retrieval.bm25_store import BM25Store
@@ -27,6 +27,8 @@ from backend.app.guardrails.output_guard import OutputGuard
 from backend.app.workflow.graph import build_rag_graph
 from backend.app.workflow.nodes import _detect_time
 from backend.app.monitoring.langsmith_logger import tracer as aegis_tracer
+from backend.app.db.database import SessionLocal
+from backend.app.services.query_scope import ensure_query_ready, resolve_artifact_ids
 
 
 class QueryPipeline:
@@ -68,16 +70,18 @@ class QueryPipeline:
 
     # ── Blocking query (POST /query) ──────────────────────────────────────────
 
-    def answer(self, query: str, top_k: int = 3, evaluate: bool = False) -> Dict[str, Any]:
+    def answer(
+        self,
+        query: str,
+        top_k: int = 3,
+        evaluate: bool = False,
+        artifact_ids: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
         """
         Run full query pipeline synchronously.
 
-        Args:
-            query:    User question
-            top_k:    Number of results to retrieve
-            evaluate: If True, run inline RAGAS evaluation (adds latency)
-
-        Returns structured response with answer, context, confidence, run_id.
+        Answers only from ready embeddings for the scoped artifact_ids
+        (or the latest completed upload when none are provided).
         """
         # 1. Input validation
         input_guard = InputGuard.validate(query)
@@ -93,9 +97,31 @@ class QueryPipeline:
                 "run_id":        None,
             }
 
-        # 2. Run full LangGraph workflow
+        db = SessionLocal()
         try:
-            final_state = self._graph.invoke({"query": query})
+            scoped_ids = resolve_artifact_ids(db, artifact_ids)
+            blocked = ensure_query_ready(db, scoped_ids)
+        finally:
+            db.close()
+
+        if blocked:
+            return {
+                "answer":        blocked,
+                "context_used":  [],
+                "warnings":      [blocked],
+                "confidence":    0.0,
+                "grounded":      False,
+                "has_hallucination": False,
+                "error":         True,
+                "run_id":        None,
+            }
+
+        # 2. Run full LangGraph workflow (retrieval scoped to ready embeddings)
+        try:
+            final_state = self._graph.invoke({
+                "query": query,
+                "artifact_ids": scoped_ids,
+            })
         except Exception as e:
             return {
                 "answer":        f"Error processing query: {str(e)}",
@@ -156,9 +182,14 @@ class QueryPipeline:
 
     # ── Streaming query (POST /query-stream) ──────────────────────────────────
 
-    def stream_answer(self, query: str) -> StreamGenerator[str, None, None]:
+    def stream_answer(
+        self,
+        query: str,
+        artifact_ids: Optional[List[int]] = None,
+    ) -> StreamGenerator[str, None, None]:
         """
         Run RAG pipeline with streaming generation and guardrails.
+        Retrieval runs only after embeddings are ready, and only for scoped uploads.
         """
         # 1. Input guard
         guard = InputGuard.validate(query)
@@ -170,23 +201,40 @@ class QueryPipeline:
             for warning in guard["warnings"]:
                 yield f"ℹ️ {warning}\n"
 
+        db = SessionLocal()
+        try:
+            scoped_ids = resolve_artifact_ids(db, artifact_ids)
+            blocked = ensure_query_ready(db, scoped_ids)
+        finally:
+            db.close()
+
+        if blocked:
+            yield f"⚠️ {blocked}\n"
+            return
+
         # 2. Start LangSmith trace
         run_id = aegis_tracer.start_run(query=query)
 
-        # 3. Time-based vs semantic retrieval
+        # 3. Time-based vs semantic retrieval (scoped to ready embeddings only)
         time_range = _detect_time(query)
 
         try:
             if time_range:
-                segments = self.collection_manager.query_time_range(time_range["start"], time_range["end"])
+                segments = self.collection_manager.query_time_range(
+                    time_range["start"],
+                    time_range["end"],
+                    artifact_ids=scoped_ids,
+                )
                 if not segments:
-                    yield "No video content found for that time range."
+                    yield "No video content found for that time range in your ready uploads."
                     return
                 context = "\n\n".join(segments)
             else:
-                retrieved = self.hybrid_retriever.retrieve_with_confidence(query)
+                retrieved = self.hybrid_retriever.retrieve_with_confidence(
+                    query, artifact_ids=scoped_ids
+                )
                 if not retrieved:
-                    yield "No relevant context found in your uploaded data."
+                    yield "No relevant context found in your newly embedded uploads."
                     return
 
                 # Log retrieval confidence headers

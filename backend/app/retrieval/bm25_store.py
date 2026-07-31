@@ -16,7 +16,7 @@ import json
 import logging
 import threading
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
@@ -114,7 +114,7 @@ class BM25Store:
         """
         from sqlalchemy import text
         query = text("""
-            SELECT ve.content, a.filename, a.modality
+            SELECT ve.content, ve.artifact_id, a.filename, a.modality
             FROM vector_embeddings ve
             LEFT JOIN artifacts a ON ve.artifact_id = a.id
             WHERE ve.embedding_type = 'text'
@@ -128,7 +128,11 @@ class BM25Store:
             self._docs = [
                 Document(
                     page_content=row.content,
-                    metadata={"source": row.filename or "unknown", "modality": row.modality or "text"}
+                    metadata={
+                        "source": row.filename or "unknown",
+                        "modality": row.modality or "text",
+                        "artifact_id": row.artifact_id,
+                    },
                 )
                 for row in results if row.content
             ]
@@ -157,12 +161,27 @@ class BM25Store:
         self._check_reload()
         return self._retriever
 
-    def search(self, query: str, top_k: int = 20) -> List[str]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 20,
+        artifact_ids: Optional[List[int]] = None,
+    ) -> List[str]:
         """Direct text search; returns list of document strings."""
         self._check_reload()
         if self._retriever is None:
             return []
-        self._retriever.k = top_k
+        # Over-fetch when filtering by artifact so we still fill top_k
+        fetch_k = top_k * 5 if artifact_ids else top_k
+        self._retriever.k = fetch_k
         results = self._retriever.invoke(query)
-        return [doc.page_content for doc in results]
+        if artifact_ids:
+            allowed = {int(a) for a in artifact_ids}
+            results = [
+                doc
+                for doc in results
+                if doc.metadata.get("artifact_id") is not None
+                and int(doc.metadata["artifact_id"]) in allowed
+            ]
+        return [doc.page_content for doc in results[:top_k]]
 

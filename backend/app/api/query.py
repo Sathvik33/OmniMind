@@ -22,6 +22,10 @@ class QueryRequest(BaseModel):
     query:    str   = Field(..., min_length=2, max_length=2000)
     top_k:    int   = Field(default=3, ge=1, le=20)
     evaluate: bool  = Field(default=False, description="Run inline RAGAS evaluation (adds latency)")
+    artifact_ids: Optional[List[int]] = Field(
+        default=None,
+        description="Only answer from these completed uploads. Defaults to the latest ready artifact.",
+    )
 
 
 class QueryResponse(BaseModel):
@@ -45,19 +49,16 @@ def query_data(request: QueryRequest) -> QueryResponse:
     """
     Synchronous RAG query with full guardrails and LangSmith tracing.
 
-    Returns:
-      - answer: LLM response (PII-masked, grounding-validated)
-      - context_used: Retrieved documents used in generation
-      - confidence: 0.0-1.0 confidence score from OutputGuard
-      - grounded: Whether answer is grounded in retrieved context
-      - has_hallucination: Whether hallucination markers detected
-      - run_id: LangSmith run ID — use for /monitor/feedback
-      - retrieval_metadata: BM25/dense hit counts and latency
-      - latency_ms: Per-node latency breakdown
-      - eval_scores: RAGAS scores (only when evaluate=True)
+    Retrieval is blocked until embeddings exist, and answers use only the
+    scoped artifact_ids (or the latest completed upload).
     """
     try:
-        result = pipeline.answer(request.query, request.top_k, evaluate=request.evaluate)
+        result = pipeline.answer(
+            request.query,
+            request.top_k,
+            evaluate=request.evaluate,
+            artifact_ids=request.artifact_ids,
+        )
         return QueryResponse(**{k: v for k, v in result.items() if k in QueryResponse.model_fields})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
@@ -73,7 +74,9 @@ def query_stream(request: QueryRequest):
     """
     def token_generator():
         try:
-            for token in pipeline.stream_answer(request.query):
+            for token in pipeline.stream_answer(
+                request.query, artifact_ids=request.artifact_ids
+            ):
                 yield token
         except Exception as e:
             yield f"\n\n❌ Error: {str(e)}\n"

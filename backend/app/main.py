@@ -85,10 +85,6 @@ app.add_middleware(
 
 app.add_middleware(ObservabilityMiddleware)
 
-app.state.video_jobs = {}
-app.state.image_jobs = {}
-
-
 app.include_router(health_router)
 app.include_router(upload_router)
 app.include_router(query_router)
