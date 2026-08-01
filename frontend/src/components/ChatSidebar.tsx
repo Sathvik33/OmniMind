@@ -47,13 +47,14 @@ export function ChatSidebar({
               <button
                 type="button"
                 className="sidebar__item-del"
-                aria-label="Delete chat"
+                aria-label={`Delete chat ${c.title || ""}`}
+                title="Delete chat and all uploads"
                 onClick={(e) => {
                   e.stopPropagation();
                   onDelete(c.id);
                 }}
               >
-                ×
+                Delete
               </button>
             </div>
           ))

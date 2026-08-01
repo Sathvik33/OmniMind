@@ -80,9 +80,15 @@ export default function App() {
   };
 
   const onDeleteChat = async (id: number) => {
+    const title = chats.find((c) => c.id === id)?.title || "this chat";
+    const ok = window.confirm(
+      `Delete “${title}”?\n\nThis permanently removes the chat, uploads, embeddings, and MinIO files.`,
+    );
+    if (!ok) return;
     try {
+      setBootError(null);
       await deleteChat(id);
-      const rows = await refreshChats();
+      const rows = await refreshChats(activeChatId === id ? null : activeChatId);
       if (!rows.length) {
         const created = await createChat();
         await refreshChats(created.id);

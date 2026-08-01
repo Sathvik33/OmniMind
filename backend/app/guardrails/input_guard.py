@@ -38,24 +38,43 @@ _INJECTION_PATTERNS = [
     r"\bDAN\b",
     r"do\s+anything\s+now",
     r"jailbreak",
-    r"exploit",
     r"bypass\s+(filter|security|detection)",
-    r"escape\s+(sequence|prompt|context)",
+    r"escape\s+(your\s+)?(prompt|context|sandbox)",
     r"injection\s+(attack|payload)",
-    r"decode\s+(base64|hex|rot13)",
+    r"decode\s+(base64|hex|rot13)\s+(and\s+)?(execute|run|eval)",
 ]
 
+# Real SQL *injection* shapes — not English "select X from the document"
 _SQL_PATTERNS = [
-    r"\b(select|insert|update|delete|drop|union)\b\s+[\s\S]*\b(from|into|table|where)\b",
-    r"''\s*or\s*['\d=]",
-    r";\s*(select|insert|update|delete|drop|truncate)",
+    r"\bselect\s*\*",                                          # SELECT *
+    r"\bselect\b.+\bfrom\b.+\bwhere\b",                        # SELECT … FROM … WHERE
+    r"\bunion\s+(all\s+)?select\b",                            # UNION SELECT
+    r"\binsert\s+into\b",
+    r"\bdelete\s+from\b",
+    r"\bdrop\s+(database|schema)\b",
+    r"\bdrop\s+table\s+(if\s+exists\s+)?[`\"']?\w+[`\"']?\s*;",  # needs SQL terminator
+    r"\bdrop\s+index\b",
+    r"\btruncate\s+table\b",
+    r"\bupdate\s+\w+\s+set\b",
+    r"('\s*or\s+'?\d+'?\s*=\s*'?\d+)",                         # ' OR 1=1
+    r"\bor\s+1\s*=\s*1\b",
+    r";\s*(select|insert|update|delete|drop|truncate)\b",
+    r"\binformation_schema\b",
+    r"\bxp_cmdshell\b",
+    r"/\*!?\d*",                                               # MySQL versioned comments
 ]
 
+# Shell / command injection — not casual punctuation
 _CMD_PATTERNS = [
-    r"(\$\(|`|&&|\|\||;\s*\w+)",
-    r"bash\s*-",
-    r"rm\s+-rf",
-    r"chmod\s+777",
+    r"\$\([^)]+\)",                 # $(…)
+    r"`[^`]+`",                     # backticks
+    r"&&\s*(rm|curl|wget|bash|sh|python|perl|nc)\b",
+    r"\|\|\s*(rm|curl|wget|bash|sh)\b",
+    r";\s*(rm|curl|wget|bash|sh|python)\b",
+    r"\bbash\s+-[ic]",
+    r"\brm\s+-rf\b",
+    r"\bchmod\s+777\b",
+    r"\bcurl\s+[^\n]*\|\s*(ba)?sh\b",
 ]
 
 _INVISIBLE_RE = re.compile(
@@ -69,10 +88,10 @@ _INJECTION_RE = re.compile(
 _SQL_RE = re.compile("|".join(_SQL_PATTERNS), re.IGNORECASE)
 _CMD_RE = re.compile("|".join(_CMD_PATTERNS), re.IGNORECASE)
 
+# Hard-block only clear attack tooling phrases (not CS textbook words like "exploit")
 _HARMFUL_KEYWORDS = {
-    "hack", "crack", "exploit", "malware", "virus", "ddos", "ransomware",
-    "phishing", "spyware", "trojan", "worm", "botnet", "c2", "shellcode",
-    "lateral movement",
+    "ransomware", "ddos", "botnet", "shellcode", "xp_cmdshell",
+    "lateral movement", "c2 server",
 }
 
 

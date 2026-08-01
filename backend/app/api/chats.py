@@ -215,16 +215,63 @@ def rename_chat(
 
 @router.delete("/{chat_id}")
 def delete_chat(chat_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Delete a chat and all of its data:
+      messages, feedback, artifacts, embeddings, metadata, ingestion jobs, MinIO blobs.
+    BM25 index is rebuilt afterward so retrieval cannot hit purged chunks.
+    """
     chat = _owned_chat(db, chat_id, user)
-    arts = db.query(Artifact).filter(Artifact.session_id == chat.id).all()
+    arts = (
+        db.query(Artifact)
+        .filter(Artifact.session_id == chat.id, Artifact.user_id == user.id)
+        .all()
+    )
+    minio_paths = [a.file_path for a in arts if a.file_path]
+    artifact_ids = [a.id for a in arts]
+
+    # Purge MinIO objects first (before DB rows disappear)
+    removed_blobs = 0
+    if minio_paths:
+        from backend.app.storage.minio_client import minio_client
+
+        for path in minio_paths:
+            try:
+                minio_client.delete_file_path(path)
+                removed_blobs += 1
+            except Exception:
+                # Continue DB purge even if one blob fails
+                pass
+
     for art in arts:
-        db.query(IngestionJob).filter(IngestionJob.artifact_id == art.id).delete()
-        db.query(VectorEmbedding).filter(VectorEmbedding.artifact_id == art.id).delete()
-        db.query(Metadata).filter(Metadata.artifact_id == art.id).delete()
+        db.query(IngestionJob).filter(IngestionJob.artifact_id == art.id).delete(
+            synchronize_session=False
+        )
+        db.query(VectorEmbedding).filter(VectorEmbedding.artifact_id == art.id).delete(
+            synchronize_session=False
+        )
+        db.query(Metadata).filter(Metadata.artifact_id == art.id).delete(
+            synchronize_session=False
+        )
         db.delete(art)
+
+    # Messages (+ feedback) cascade via Session.messages relationship
     db.delete(chat)
     db.commit()
-    return {"ok": True, "deleted": chat_id}
+
+    # Drop purged docs from the sparse index
+    try:
+        from backend.app.retrieval.bm25_store import BM25Store
+
+        BM25Store().rebuild_from_postgres(db)
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "deleted": chat_id,
+        "artifacts_removed": len(artifact_ids),
+        "minio_removed": removed_blobs,
+    }
 
 
 def add_chat_message(

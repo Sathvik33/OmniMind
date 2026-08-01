@@ -55,4 +55,27 @@ class MinioClient:
         """Get a temporary download URL."""
         return self.client.presigned_get_object(self.bucket_name, object_name)
 
+    def delete_file_path(self, file_path: str) -> None:
+        """
+        Delete an object given a stored path like ``bucket/object`` or bare object name.
+        Missing objects are ignored.
+        """
+        if not file_path:
+            return
+        path = file_path.replace("\\", "/").lstrip("/")
+        if "/" in path:
+            bucket, object_name = path.split("/", 1)
+        else:
+            bucket, object_name = self.bucket_name, path
+        if not object_name:
+            return
+        try:
+            self.client.remove_object(bucket, object_name)
+        except S3Error as err:
+            # Already gone — fine for idempotent chat purge
+            if getattr(err, "code", None) in ("NoSuchKey", "NoSuchBucket"):
+                return
+            print(f"MinIO delete error for {file_path}: {err}")
+            raise
+
 minio_client = MinioClient()

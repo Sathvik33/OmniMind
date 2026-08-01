@@ -84,18 +84,21 @@
   border: none;
   background: transparent;
   color: var(--muted);
-  padding: 0.35rem 0.5rem;
-  font-size: 1.1rem;
+  padding: 0.35rem 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   line-height: 1;
   opacity: 0;
 }
 
-.sidebar__item:hover .sidebar__item-del {
+.sidebar__item:hover .sidebar__item-del,
+.sidebar__item--active .sidebar__item-del {
   opacity: 1;
 }
 
 .sidebar__item-del:hover {
-  color: var(--danger);
+  color: var(--danger, #b42318);
 }
 
 .sidebar__foot {

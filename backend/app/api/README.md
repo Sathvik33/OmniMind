@@ -7,7 +7,7 @@ Thin HTTP adapters. Business logic stays in pipelines / services.
 | Router | Endpoints | Notes |
 |--------|-----------|-------|
 | `auth.py` | `POST /auth/signup`, `/login`, `GET /auth/me` | Email + password, JWT |
-| `chats.py` | `GET/POST /chats`, `GET/PATCH/DELETE /chats/{id}` | Sidebar history |
+| `chats.py` | `GET/POST /chats`, `GET/PATCH/DELETE /chats/{id}` | Sidebar history; `DELETE` purges messages, embeddings, jobs, **and MinIO blobs**, then rebuilds BM25 |
 | `upload.py` | `POST /upload`, `GET /jobs/{id}` | Auth + `session_id`; ownership checks |
 | `query.py` | `POST /query`, `POST /query-stream` | Auth + `session_id`; server-side artifact scope |
 | `health.py` | `GET /health` | Liveness |

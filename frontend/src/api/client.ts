@@ -1,4 +1,9 @@
-const API_BASE = import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8000";
+// Empty / unset → same-origin (Vite proxies to the API). Required for ngrok share links.
+const _rawBase = import.meta.env.VITE_BACKEND_URL as string | undefined;
+const API_BASE =
+  !_rawBase || _rawBase === "same" || _rawBase === "/"
+    ? ""
+    : _rawBase.replace(/\/$/, "");
 const TOKEN_KEY = "aegis_token";
 
 export type User = {
@@ -83,6 +88,8 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
+  // Ngrok free interstitial page breaks fetch/JSON unless skipped
+  headers.set("ngrok-skip-browser-warning", "true");
   const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
   if (res.status === 401) {
     setToken(null);
@@ -174,28 +181,57 @@ export async function streamQuery(
   onToken: (chunk: string) => void,
   signal?: AbortSignal,
 ): Promise<string> {
-  const res = await apiFetch("/query-stream", {
+  try {
+    const res = await apiFetch("/query-stream", {
+      method: "POST",
+      body: JSON.stringify({ query, session_id: sessionId }),
+      signal,
+    });
+    if (!res.ok || !res.body) {
+      throw new Error(await readError(res));
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let full = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      full += chunk;
+      onToken(chunk);
+    }
+
+    // Ngrok / proxy often drop slow local-LLM streams after headers only
+    if (!cleanStreamText(full, { final: true })) {
+      return await blockingQuery(query, sessionId, onToken, signal);
+    }
+    return full;
+  } catch (e) {
+    if ((e as Error).name === "AbortError") throw e;
+    // Fall back to blocking JSON query (more reliable through tunnels)
+    return await blockingQuery(query, sessionId, onToken, signal);
+  }
+}
+
+async function blockingQuery(
+  query: string,
+  sessionId: number,
+  onToken: (chunk: string) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  const res = await apiFetch("/query", {
     method: "POST",
-    body: JSON.stringify({ query, session_id: sessionId }),
+    body: JSON.stringify({ query, session_id: sessionId, top_k: 5 }),
     signal,
   });
-  if (!res.ok || !res.body) {
-    throw new Error(await readError(res));
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let full = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    full += chunk;
-    onToken(chunk);
-  }
-
-  return full;
+  if (!res.ok) throw new Error(await readError(res));
+  const data = (await res.json()) as { answer?: string };
+  const answer = (data.answer || "").trim();
+  if (!answer) throw new Error("Empty answer from server");
+  onToken(answer);
+  return answer;
 }
 
 export function cleanStreamText(text: string, opts?: { final?: boolean }): string {
@@ -210,7 +246,9 @@ export function cleanStreamText(text: string, opts?: { final?: boolean }): strin
     }
     if (/^\[Retrieved:.*\]$/.test(s)) continue;
     if (/^\[Response confidence:.*\]$/.test(s)) continue;
-    if (s.startsWith("⚠️") || s.startsWith("ℹ️") || s.startsWith("❌")) continue;
+    // Keep errors visible — only strip soft info warnings
+    if (s.startsWith("ℹ️")) continue;
+    if (s.startsWith("⚠️") && !/error|fail|couldn|timeout/i.test(s)) continue;
     kept.push(line);
   }
 

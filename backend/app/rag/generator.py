@@ -72,15 +72,31 @@ class Generator:
         prompt = self._build_stream_prompt(query, context)
         if hasattr(self.llm, "stream"):
             try:
+                yielded = False
                 for token in self.llm.stream(prompt):
                     if token:
+                        yielded = True
                         yield token
-                return
+                if yielded:
+                    return
+                logger.warning("LLM stream returned no tokens; falling back to generate().")
             except Exception as e:
                 logger.warning("Native LLM stream failed (%s); falling back.", e)
 
         # Fallback: generate fully, then yield in small slices
-        plain = self.generate(query, context)
+        try:
+            plain = self.generate(query, context)
+        except Exception as e:
+            logger.error("LLM generate failed after stream failure: %s", e)
+            yield (
+                "I could not generate an answer right now "
+                f"({type(e).__name__}: {e}). Check the generation LLM "
+                "(Groq key / model, or Ollama if USE_LOCAL_LLM=true)."
+            )
+            return
+        if not (plain or "").strip():
+            yield "I could not generate an answer right now (empty model response)."
+            return
         step = 24
         for i in range(0, len(plain), step):
             yield plain[i : i + step]

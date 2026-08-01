@@ -77,9 +77,15 @@ _cors_origins = [
     ).split(",")
     if o.strip()
 ]
+# Rotating ngrok frontend URLs (credentials-safe regex complement to allow_origins)
+_cors_origin_regex = os.getenv(
+    "CORS_ORIGIN_REGEX",
+    r"https://.*\.ngrok-free\.dev|https://.*\.ngrok-free\.app|https://.*\.ngrok\.io",
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=_cors_origin_regex or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -217,6 +217,9 @@ class QueryPipeline:
         full_answer = ""
         run_error: Optional[str] = None
 
+        # Keep proxies/ngrok from buffering an empty body during slow retrieval
+        yield "Working on your question…\n\n"
+
         # 3. Time-based vs semantic retrieval (scoped to ready embeddings only)
         time_range = _detect_time(query)
         gen_query = query
