@@ -13,6 +13,7 @@ No LangChain dependencies - pure Python + sentence-transformers.
 
 import logging
 import re
+import time
 from typing import List, Dict, Any, Optional
 
 from backend.app.retrieval.pgvector_store import PgVectorStore
@@ -114,12 +115,15 @@ class HybridRetriever:
         include_scores: bool = True,
         adaptive_weights: bool = True,
         artifact_ids: Optional[List[int]] = None,
+        run_id: Optional[str] = None,
     ) -> List[str] | List[Dict[str, Any]]:
         """
         Full hybrid retrieval pipeline with fusion and reranking.
 
         When artifact_ids is set, only vectors from those uploads are used.
+        When run_id is set, BM25 / dense / RRF / rerank steps are logged to LangSmith.
         """
+        t_all = time.perf_counter()
         # Get adaptive weights
         bm25_weight, dense_weight = (
             self._get_adaptive_weights(query) if adaptive_weights else (0.4, 0.6)
@@ -163,12 +167,55 @@ class HybridRetriever:
         else:
             candidate_texts = []
 
+        if run_id:
+            try:
+                from backend.app.monitoring.langsmith_logger import tracer
+
+                tracer.log_retrieval(
+                    run_id=run_id,
+                    query=query,
+                    bm25_hits=len(bm25_results),
+                    dense_hits=len(dense_results),
+                    fused_count=len(candidate_texts),
+                    bm25_weight=bm25_weight,
+                    dense_weight=dense_weight,
+                    latency_ms=round((time.perf_counter() - t_all) * 1000, 2),
+                    bm25_previews=bm25_results[:8],
+                    dense_previews=dense_results[:8],
+                    fused_previews=candidate_texts[:8],
+                    artifact_ids=artifact_ids,
+                )
+            except Exception as e:
+                logger.debug("LangSmith retrieval log skipped: %s", e)
+
         # 4. Cross-encoder reranking (with scores)
+        t_rerank = time.perf_counter()
         reranked_with_scores = (
             self.reranker.rerank(query, candidate_texts, return_scores=True)
             if candidate_texts
             else []
         )
+        if run_id and reranked_with_scores:
+            try:
+                from backend.app.monitoring.langsmith_logger import tracer
+                from backend.app.retrieval.reranker import _MODEL_NAME as RERANK_MODEL
+
+                scores = [float(s) for _, s in reranked_with_scores]
+                tracer.log_rerank(
+                    run_id=run_id,
+                    query=query,
+                    input_count=len(candidate_texts),
+                    output_count=len(reranked_with_scores),
+                    scores=scores,
+                    model=RERANK_MODEL,
+                    latency_ms=round((time.perf_counter() - t_rerank) * 1000, 2),
+                    documents=[
+                        {"text": doc, "score": float(score)}
+                        for doc, score in reranked_with_scores
+                    ],
+                )
+            except Exception as e:
+                logger.debug("LangSmith rerank log skipped: %s", e)
 
         # 5. Multimodal retrieval via pgvector (images + video text/vision)
         modal_results = []
@@ -239,6 +286,7 @@ class HybridRetriever:
         self,
         query: str,
         artifact_ids: Optional[List[int]] = None,
+        run_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Retrieve documents with detailed confidence information.
@@ -249,7 +297,9 @@ class HybridRetriever:
           - source: 'text' or 'multimodal'
           - explanation: why this result was chosen
         """
-        results = self.retrieve(query, include_scores=True, artifact_ids=artifact_ids)
+        results = self.retrieve(
+            query, include_scores=True, artifact_ids=artifact_ids, run_id=run_id
+        )
 
         for result in results:
             score = result["relevance_score"]

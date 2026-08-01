@@ -4,6 +4,21 @@ Interactive runbook for developers and demos. Pair with the root [readme](../rea
 
 ---
 
+## 0. Auth (required for chat UI)
+
+1. Sign up / log in at the React app (`email` + password ≥ 8 chars).
+2. JWT is stored in `localStorage` and sent as `Authorization: Bearer …`.
+3. Each **chat** owns its uploads; `/query-stream` only searches that chat’s `artifact_ids`.
+
+```bash
+# Signup
+curl -s -X POST http://127.0.0.1:8000/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"secret123"}'
+```
+
+---
+
 ## 1. Boot sequence (checklist)
 
 ```text
@@ -165,9 +180,9 @@ Backend contract the UI relies on: `uploadFile` → poll `getJobStatus` → `str
 
 | Tool | How |
 |------|-----|
-| LangSmith | `LANGCHAIN_TRACING_V2=true` + API key → project `Aegis` |
+| LangSmith | `LANGCHAIN_TRACING_V2=true` + API key → project `Aegis`. Query traces (`aegis_rag_query`) include child spans: `bm25_retrieve`, `dense_retrieve`, `hybrid_retrieval`, `cross_encoder_rerank`. Ingest traces (`aegis_ingest`) include `document_chunking` with hierarchy samples. |
 | Monitor API | `/monitor/stats`, `/monitor/runs` |
-| Evaluate | `/evaluate/live` against current pipeline |
+| Evaluate | Opt-in RAGAS only (`POST /evaluate*`, `evaluate:true` on `/query`, or CLI scripts) — not at API boot; uses **actual retrieved contexts**; reports in [`docs/eval/`](./eval/) |
 
 ---
 

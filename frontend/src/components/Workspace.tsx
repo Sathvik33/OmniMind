@@ -4,14 +4,17 @@ import { Composer } from "./Composer";
 import { MessageList, type ChatMessage, type DocStatus } from "./MessageList";
 import {
   cleanStreamText,
+  getChat,
   getJobStatus,
   streamQuery,
   uploadFile,
+  type ChatDetail,
 } from "../api/client";
 import "./Workspace.css";
 
 type Props = {
-  onBack: () => void;
+  chatId: number;
+  onChatUpdated?: () => void;
 };
 
 function uid() {
@@ -41,7 +44,32 @@ function updateDocMessage(
   );
 }
 
-export function Workspace({ onBack }: Props) {
+function mapChatToMessages(detail: ChatDetail): ChatMessage[] {
+  return detail.messages.map((m) => {
+    if (m.role === "document" || m.document) {
+      const d = m.document!;
+      return {
+        id: String(m.id),
+        role: "document" as const,
+        content: d.name,
+        document: {
+          name: d.name,
+          sizeLabel: d.sizeLabel,
+          ext: d.ext || fileExt(d.name),
+          status: (d.status as DocStatus) || "ready",
+          statusLabel: d.statusLabel,
+        },
+      };
+    }
+    return {
+      id: String(m.id),
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.content,
+    };
+  });
+}
+
+export function Workspace({ chatId, onChatUpdated }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -51,8 +79,41 @@ export function Workspace({ onBack }: Props) {
   const [readyArtifactIds, setReadyArtifactIds] = useState<number[]>([]);
   const [jobLabel, setJobLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    abortRef.current?.abort();
+    setJobId(null);
+    setPendingArtifactId(null);
+    setPendingDocMsgId(null);
+    setJobLabel(null);
+    setStreaming(false);
+    setUploading(false);
+
+    getChat(chatId)
+      .then((detail) => {
+        if (cancelled) return;
+        setMessages(mapChatToMessages(detail));
+        setReadyArtifactIds(
+          detail.artifacts.filter((a) => a.status === "completed").map((a) => a.id),
+        );
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load chat");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId]);
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -76,7 +137,7 @@ export function Workspace({ onBack }: Props) {
         if (pendingDocMsgId) {
           setMessages((prev) =>
             updateDocMessage(prev, pendingDocMsgId, {
-              status: "processing" as DocStatus,
+              status: "processing",
               statusLabel: `Preparing · ${human}`,
             }),
           );
@@ -101,6 +162,7 @@ export function Workspace({ onBack }: Props) {
           setPendingDocMsgId(null);
           setJobLabel(null);
           setError(null);
+          onChatUpdated?.();
           return;
         }
         if (s === "failed" || s === "dead_letter") {
@@ -138,14 +200,6 @@ export function Workspace({ onBack }: Props) {
         window.setTimeout(tick, 1500);
       } catch (e) {
         if (!cancelled) {
-          if (pendingDocMsgId) {
-            setMessages((prev) =>
-              updateDocMessage(prev, pendingDocMsgId, {
-                status: "failed",
-                statusLabel: "Status check failed",
-              }),
-            );
-          }
           setJobId(null);
           setPendingArtifactId(null);
           setPendingDocMsgId(null);
@@ -158,7 +212,7 @@ export function Workspace({ onBack }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [jobId, pendingArtifactId, pendingDocMsgId]);
+  }, [jobId, pendingArtifactId, pendingDocMsgId, onChatUpdated]);
 
   const onUpload = async (file: File) => {
     setError(null);
@@ -182,7 +236,7 @@ export function Workspace({ onBack }: Props) {
     setPendingDocMsgId(docId);
     setJobLabel(`Uploading ${file.name}`);
     try {
-      const result = await uploadFile(file);
+      const result = await uploadFile(file, chatId);
       setPendingArtifactId(result.artifact_id ?? null);
       setJobId(result.job_id);
       setMessages((prev) =>
@@ -192,6 +246,7 @@ export function Workspace({ onBack }: Props) {
         }),
       );
       setJobLabel("Queued — you’ll be able to ask once it’s ready");
+      onChatUpdated?.();
     } catch (e) {
       setMessages((prev) =>
         updateDocMessage(prev, docId, {
@@ -236,6 +291,7 @@ export function Workspace({ onBack }: Props) {
     try {
       await streamQuery(
         text,
+        chatId,
         (chunk) => {
           raw += chunk;
           const cleaned = cleanStreamText(raw);
@@ -244,12 +300,12 @@ export function Workspace({ onBack }: Props) {
           );
         },
         controller.signal,
-        readyArtifactIds,
       );
       const finalText = cleanStreamText(raw, { final: true }) || "No response received.";
       setMessages((prev) =>
         prev.map((m) => (m.id === assistantId ? { ...m, content: finalText } : m)),
       );
+      onChatUpdated?.();
     } catch (e) {
       if ((e as Error).name === "AbortError") return;
       const msg = e instanceof Error ? e.message : "Query failed";
@@ -267,48 +323,37 @@ export function Workspace({ onBack }: Props) {
   };
 
   const ingesting = uploading || jobId != null;
-  const canAsk = !streaming && !ingesting && readyArtifactIds.length > 0;
+  const canAsk = !streaming && !ingesting && readyArtifactIds.length > 0 && !loading;
 
   return (
     <motion.section
       className="workspace"
-      initial={{ opacity: 0, y: 12 }}
+      initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+      transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
     >
       <header className="workspace__top">
-        <button type="button" className="ghost-btn" onClick={onBack}>
-          Back
-        </button>
         <div className="workspace__brand">
-          <img src="/aegis.svg" alt="" width={28} height={28} />
           <div>
-            <strong>Aegis</strong>
+            <strong>This chat</strong>
             <span>
               {readyArtifactIds.length
-                ? `${readyArtifactIds.length} file${readyArtifactIds.length === 1 ? "" : "s"} ready`
-                : "Your files, your answers"}
+                ? `${readyArtifactIds.length} file${readyArtifactIds.length === 1 ? "" : "s"} in scope`
+                : "Uploads here only — not other chats"}
             </span>
           </div>
         </div>
-        <button
-          type="button"
-          className="ghost-btn"
-          onClick={() => {
-            abortRef.current?.abort();
-            setMessages([]);
-            setReadyArtifactIds([]);
-            setPendingDocMsgId(null);
-            setError(null);
-          }}
-        >
-          Clear
-        </button>
       </header>
 
       <div className="workspace__panel">
         <div className="workspace__scroll" ref={scrollerRef}>
-          <MessageList messages={messages} streaming={streaming} />
+          {loading ? (
+            <p className="empty-chat__text" style={{ padding: "2rem 0.5rem" }}>
+              Loading conversation…
+            </p>
+          ) : (
+            <MessageList messages={messages} streaming={streaming} />
+          )}
         </div>
 
         {error ? <div className="workspace__error">{error}</div> : null}

@@ -212,8 +212,10 @@ class QueryPipeline:
             yield f"⚠️ {blocked}\n"
             return
 
-        # 2. Start LangSmith trace
+        # 2. Start LangSmith trace — always closed in finally
         run_id = aegis_tracer.start_run(query=query)
+        full_answer = ""
+        run_error: Optional[str] = None
 
         # 3. Time-based vs semantic retrieval (scoped to ready embeddings only)
         time_range = _detect_time(query)
@@ -236,21 +238,26 @@ class QueryPipeline:
                 if not segments:
                     # Fall back to semantic retrieval if the time window is empty
                     retrieved = self.hybrid_retriever.retrieve_with_confidence(
-                        query, artifact_ids=scoped_ids
+                        query, artifact_ids=scoped_ids, run_id=run_id
                     )
                     if not retrieved:
-                        yield "No video content found for that time range in your ready uploads."
+                        msg = "No video content found for that time range in your ready uploads."
+                        run_error = msg
+                        yield msg
                         return
                     chunks = [r["text"] for r in retrieved]
                     context = self.context_builder.build(chunks)
                 else:
                     context = "\n\n".join(segments)
             else:
+                # LangSmith children: bm25_retrieve, dense_retrieve, hybrid_retrieval, rerank
                 retrieved = self.hybrid_retriever.retrieve_with_confidence(
-                    query, artifact_ids=scoped_ids
+                    query, artifact_ids=scoped_ids, run_id=run_id
                 )
                 if not retrieved:
-                    yield "No relevant context found in your newly embedded uploads."
+                    msg = "No relevant context found in your newly embedded uploads."
+                    run_error = msg
+                    yield msg
                     return
 
                 # Log retrieval confidence headers
@@ -261,46 +268,44 @@ class QueryPipeline:
                 chunks = [r["text"] for r in retrieved]
                 context = self.context_builder.build(chunks)
 
-                aegis_tracer.log_retrieval(
-                    run_id=run_id,
-                    bm25_hits=len([r for r in retrieved if r.get("source") == "text"]),
-                    dense_hits=len(retrieved),
-                    fused_count=len(chunks),
-                )
+            # 4. Stream generation tokens
+            try:
+                for token in self.generator.stream_generate(gen_query, context):
+                    full_answer += token
+                    yield token
+            except Exception as e:
+                run_error = f"Generation error: {e}"
+                yield f"\n\n❌ Generation error: {str(e)}\n"
+                return
+
+            # 5. Output guard
+            output_validation = OutputGuard.validate(full_answer, context)
+            for warning in output_validation.get("warnings", []):
+                yield f"\n\n⚠️ {warning}"
+
+            confidence = output_validation.get("confidence", 0.5)
+            yield f"\n\n[Response confidence: {confidence:.1%}]"
+
+            aegis_tracer.log_generation(run_id=run_id, answer=full_answer)
+            aegis_tracer.log_guardrails(
+                run_id=run_id,
+                input_ok=True,
+                output_ok=output_validation.get("ok", True),
+                confidence=confidence,
+                grounded=output_validation.get("grounded", False),
+                has_hallucination=output_validation.get("has_hallucination", False),
+            )
 
         except Exception as e:
+            run_error = f"Retrieval error: {e}"
             yield f"❌ Retrieval error: {str(e)}\n"
-            return
-
-        # 4. Stream generation tokens
-        full_answer = ""
-        try:
-            for token in self.generator.stream_generate(gen_query, context):
-                full_answer += token
-                yield token
-        except Exception as e:
-            yield f"\n\n❌ Generation error: {str(e)}\n"
-            return
-
-        # 5. Output guard
-        output_validation = OutputGuard.validate(full_answer, context)
-        for warning in output_validation.get("warnings", []):
-            yield f"\n\n⚠️ {warning}"
-
-        confidence = output_validation.get("confidence", 0.5)
-        yield f"\n\n[Response confidence: {confidence:.1%}]"
-
-        # 6. End LangSmith trace
-        aegis_tracer.log_generation(run_id=run_id, answer=full_answer)
-        aegis_tracer.log_guardrails(
-            run_id=run_id,
-            input_ok=True,
-            output_ok=output_validation.get("ok", True),
-            confidence=confidence,
-            grounded=output_validation.get("grounded", False),
-            has_hallucination=output_validation.get("has_hallucination", False),
-        )
-        aegis_tracer.end_run(run_id=run_id, final_answer=full_answer)
+        finally:
+            # Always close LangSmith parent — prevents perpetual "running" traces
+            aegis_tracer.end_run(
+                run_id=run_id,
+                final_answer=full_answer,
+                error=run_error,
+            )
 
     # ── Monitoring helpers ────────────────────────────────────────────────────
 

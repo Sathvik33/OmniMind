@@ -1,20 +1,17 @@
-"""
-Query readiness + artifact scoping.
-
-Blocks retrieval while ingestion/embedding is still running, and resolves
-which artifact IDs answers may use (session uploads or latest completed).
-"""
+"""Query readiness + session-scoped artifact resolution."""
 
 from __future__ import annotations
 
 from typing import List, Optional, Sequence
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from backend.app.db.models import (
     Artifact,
     IngestionJob,
     ProcessingStatus,
+    Session as ChatSession,
     VectorEmbedding,
 )
 
@@ -28,12 +25,43 @@ _IN_FLIGHT = {
 }
 
 
+def get_owned_session(db: Session, session_id: int, user_id: int) -> ChatSession:
+    chat = (
+        db.query(ChatSession)
+        .filter(ChatSession.id == session_id, ChatSession.user_id == user_id)
+        .first()
+    )
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return chat
+
+
+def resolve_session_artifact_ids(db: Session, user_id: int, session_id: int) -> List[int]:
+    """
+    Ready artifact IDs for this chat only — never global latest, never other users.
+    """
+    get_owned_session(db, session_id, user_id)
+    rows = (
+        db.query(Artifact.id)
+        .join(VectorEmbedding, VectorEmbedding.artifact_id == Artifact.id)
+        .filter(
+            Artifact.session_id == session_id,
+            Artifact.user_id == user_id,
+            Artifact.processing_status == ProcessingStatus.COMPLETED,
+        )
+        .distinct()
+        .order_by(Artifact.id.asc())
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
 def resolve_artifact_ids(
     db: Session, requested: Optional[Sequence[int]] = None
 ) -> List[int]:
     """
-    Use explicit artifact_ids when provided; otherwise the single most recently
-    completed artifact that already has embeddings.
+    Legacy helper (evaluate / unscoped tools). Prefer resolve_session_artifact_ids
+    for authenticated chat queries.
     """
     if requested:
         return [int(a) for a in requested if a is not None]
@@ -54,8 +82,8 @@ def ensure_query_ready(db: Session, artifact_ids: Sequence[int]) -> Optional[str
     """
     if not artifact_ids:
         return (
-            "No embedded documents yet. Upload a file and wait until ingestion "
-            "finishes before asking questions."
+            "No embedded documents in this chat yet. Upload a file and wait until "
+            "ingestion finishes before asking questions."
         )
 
     ids = list(artifact_ids)
@@ -79,8 +107,6 @@ def ensure_query_ready(db: Session, artifact_ids: Sequence[int]) -> Optional[str
             "Please wait until ingestion completes, then ask again."
         )
 
-    # Also block if anything else is still embedding globally and caller
-    # asked about "latest" without explicit ids — already scoped to completed.
     for aid in ids:
         art = db.query(Artifact).filter(Artifact.id == aid).first()
         if not art:

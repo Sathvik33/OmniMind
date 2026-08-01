@@ -14,6 +14,8 @@ from backend.app.api.evaluate import router as evaluate_router
 from backend.app.api.monitor import router as monitor_router
 from backend.app.api.evaluate import set_pipeline
 from backend.app.api.feedback import router as feedback_router
+from backend.app.api.auth import router as auth_router
+from backend.app.api.chats import router as chats_router
 from backend.app.services.groq_vision_service import GroqVisionService
 from backend.app.retrieval.bm25_store import BM25Store
 
@@ -47,7 +49,7 @@ async def lifespan(app: FastAPI):
     else:
         print("LangSmith monitoring in no-op mode (check LANGSMITH_API_KEY)")
 
-    # 4. Wire pipeline into evaluate router for live evaluation
+    # 4. Optional: remember pipeline for /evaluate/live (does not start RAGAS)
     from backend.app.api.query import pipeline as query_pipeline
     set_pipeline(query_pipeline)
 
@@ -86,6 +88,8 @@ app.add_middleware(
 app.add_middleware(ObservabilityMiddleware)
 
 app.include_router(health_router)
+app.include_router(auth_router)
+app.include_router(chats_router)
 app.include_router(upload_router)
 app.include_router(query_router)
 app.include_router(monitor_router)

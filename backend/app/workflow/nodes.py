@@ -151,13 +151,12 @@ def guard_input(state: OmniMindState) -> Dict[str, Any]:
     t0 = time.perf_counter()
     query = state.get("query", "")
 
-    # Generate a run_id if not already set
-    run_id = state.get("run_id") or str(uuid.uuid4())
-
-    # Start LangSmith run
+    # Start LangSmith parent — use the id LangSmith actually created
     tracer = _get_tracer()
-    if tracer:
-        tracer.start_run(query=query, metadata={"run_id": run_id})
+    if tracer and tracer.is_active():
+        run_id = tracer.start_run(query=query)
+    else:
+        run_id = state.get("run_id") or str(uuid.uuid4())
 
     result = InputGuard.validate(query)
 
@@ -233,8 +232,12 @@ def make_hybrid_retrieve(hybrid_retriever):
     def hybrid_retrieve(state: OmniMindState) -> Dict[str, Any]:
         t0 = time.perf_counter()
         artifact_ids = state.get("artifact_ids") or None
+        # LangSmith: bm25 / dense / RRF / first-pass rerank logged inside HybridRetriever
         results = hybrid_retriever.retrieve(
-            state["query"], include_scores=True, artifact_ids=artifact_ids
+            state["query"],
+            include_scores=True,
+            artifact_ids=artifact_ids,
+            run_id=state.get("run_id"),
         )
 
         # Separate text and metadata
@@ -256,17 +259,6 @@ def make_hybrid_retrieve(hybrid_retriever):
             "fused_count": len(candidates),
             "latency_ms": latency["hybrid_retrieve"],
         }
-
-        # Log to LangSmith
-        tracer = _get_tracer()
-        if tracer and state.get("run_id"):
-            tracer.log_retrieval(
-                run_id=state["run_id"],
-                bm25_hits=bm25_count,
-                dense_hits=dense_count,
-                fused_count=len(candidates),
-                latency_ms=latency["hybrid_retrieve"],
-            )
 
         return {
             "candidates": candidates,
@@ -296,15 +288,20 @@ def make_rerank(reranker):
         latency = state.get("latency_ms", {})
         latency["rerank"] = _ms(t0)
 
-        # Log to LangSmith
+        # Second-pass graph rerank (after HybridRetriever's first pass)
         tracer = _get_tracer()
         if tracer and state.get("run_id"):
             tracer.log_rerank(
                 run_id=state["run_id"],
+                query=state.get("query"),
                 input_count=len(candidates),
                 output_count=len(reranked),
                 scores=scores,
                 latency_ms=latency["rerank"],
+                documents=[
+                    {"text": doc, "score": score}
+                    for doc, score in zip(reranked, scores)
+                ],
             )
 
         return {"reranked": reranked, "latency_ms": latency}

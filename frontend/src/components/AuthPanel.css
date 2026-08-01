@@ -1,0 +1,96 @@
+.auth {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(1.25rem, 3vw, 2.5rem);
+  max-width: 440px;
+  margin: 0 auto;
+}
+
+.auth__brand {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.05rem;
+  color: var(--ink);
+  margin-bottom: 2.5rem;
+}
+
+.auth__brand img {
+  border-radius: 8px;
+}
+
+.auth__card h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.8rem, 4vw, 2.2rem);
+  font-weight: 600;
+  color: var(--forest);
+}
+
+.auth__lede {
+  margin: 0.75rem 0 1.5rem;
+  color: var(--ink-soft);
+  line-height: 1.5;
+  font-size: 0.98rem;
+}
+
+.auth__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.auth__form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.auth__form input {
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 0.7rem 0.85rem;
+  background: #faf7f1;
+  font-size: 0.95rem;
+}
+
+.auth__form input:focus {
+  outline: 2px solid rgba(30, 58, 52, 0.25);
+  border-color: var(--forest-mid);
+}
+
+.auth__error {
+  border: 1px solid rgba(181, 74, 60, 0.35);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+.auth__form .btn-primary {
+  margin-top: 0.35rem;
+  width: 100%;
+}
+
+.auth__switch {
+  margin-top: 1.25rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.auth__switch button {
+  border: none;
+  background: none;
+  color: var(--forest);
+  font-weight: 600;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}

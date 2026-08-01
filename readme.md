@@ -22,6 +22,7 @@
 **[API](#-api-reference)** ·
 **[Video RAG](#-video-rag-deep-dive)** ·
 **[Config](#-configuration)** ·
+**[Evaluation](#evaluation-ragas--local-qwen)** ·
 **[Docs](docs/)**
 
 </div>
@@ -416,6 +417,24 @@ VIDEO_VISION_ENABLED=true
 
 </details>
 
+<details>
+<summary><strong>LangSmith observability</strong></summary>
+
+| Variable | Effect |
+|----------|--------|
+| `LANGSMITH_API_KEY` / `LANGCHAIN_API_KEY` | Enables tracing |
+| `LANGCHAIN_PROJECT` | Project name (default `Aegis`) |
+| `LANGCHAIN_TRACING_V2` | Set `true` for LangChain auto-tracing extras |
+
+In the LangSmith UI, open a run and expand children:
+
+| Trace | Child spans |
+|-------|-------------|
+| `aegis_rag_query` | `bm25_retrieve` · `dense_retrieve` · `hybrid_retrieval` (RRF) · `cross_encoder_rerank` (ranked chunk previews + scores) · generation / guardrails |
+| `aegis_ingest` | `document_chunking` (chunk counts, hierarchy samples, text previews) |
+
+</details>
+
 ---
 
 ## Frontend (React)
@@ -471,6 +490,46 @@ More detail:
 | Histogram scene filter | Skips near-duplicate frames → fewer vision calls |
 | Celery ingestion | Upload API returns immediately; UI polls `/jobs` |
 | Artifact scoping | Answers only from ready uploads (no race with embedding) |
+
+---
+
+## Evaluation (RAGAS)
+
+Aegis is evaluated with **[RAGAS](https://docs.ragas.io/)** on real user-style questions against an uploaded document. For each query the pipeline retrieves **actual hybrid-search contexts** (scoped to that chat’s artifact), generates an answer, then scores faithfulness, answer relevancy, context precision, and context recall.
+
+Evaluation is **opt-in only** — it does not run at API startup or on normal `/query` / `/query-stream` traffic. It runs when you call `POST /evaluate*`, pass `evaluate: true` on `/query`, or run the CLI scripts below.
+
+The judge LLM defaults to local **Ollama `qwen2.5:7b`** (`RAGAS_LLM_PROVIDER=ollama`) so evaluation can run without cloud rate limits.
+
+```powershell
+# Ollama with qwen2.5:7b; API + Celery optional for --direct
+$env:RAGAS_LLM_PROVIDER="ollama"
+$env:USE_LOCAL_LLM="true"
+
+# Scoped live eval: ingest a user document, ask sample questions, score retrieved contexts
+python -m backend.scripts.eval_pdf_scoped --direct --file path\to\notes.md
+
+# Larger baked / retrieve benchmarks
+python -m backend.scripts.run_ragas_benchmark --mode offline
+python -m backend.scripts.run_ragas_benchmark --mode retrieve
+```
+
+Reports and per-query samples (question, answer, retrieved chunks, ground truth) are written under [`docs/eval/`](docs/eval/).
+
+### Example run — NLP endsem notes (scoped · n=5 · judge `ollama:qwen2.5:7b`)
+
+Questions covered topics such as the Turing Test, TF-IDF, BLEU, and self-attention Q/K/V — each scored against the chunks actually returned by retrieval for that chat.
+
+| Metric | Average |
+|--------|--------:|
+| Faithfulness | 0.90 |
+| Answer relevancy | 0.62 |
+| Context precision | 0.74 |
+| Context recall | 1.00 |
+| Composite | 0.80 |
+| Pass rate (≥ 0.5) | 100% |
+
+Detailed per-run JSON is written under `docs/eval/` locally (gitignored); only `.gitkeep` is committed.
 
 ---
 

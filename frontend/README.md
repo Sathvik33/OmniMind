@@ -15,6 +15,10 @@ npm run build
 npm run preview
 ```
 
+## Auth UI
+
+Landing → Log in / Sign up (email + password). JWT in `localStorage`. Sidebar lists past chats; each chat loads its own messages and uploads. Queries send `session_id` only — the server resolves that chat’s artifact scope.
+
 ## What you get
 
 | Surface | Role |

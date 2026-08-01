@@ -22,6 +22,8 @@ class User(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=True)
+    password_hash = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     sessions = relationship("Session", back_populates="user")
@@ -32,10 +34,13 @@ class Session(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    title = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
     user = relationship("User", back_populates="sessions")
     messages = relationship("ChatHistory", back_populates="session", cascade="all, delete-orphan")
+    artifacts = relationship("Artifact", back_populates="session")
 
 class ChatRole(enum.Enum):
     USER = "user"
@@ -70,6 +75,7 @@ class Artifact(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
+    session_id = Column(Integer, ForeignKey("sessions.id", ondelete="SET NULL"), index=True, nullable=True)
     filename = Column(String, nullable=False)
     file_path = Column(String, nullable=False) # MinIO path reference
     modality = Column(String, nullable=False) # document, image, video, audio
@@ -79,6 +85,7 @@ class Artifact(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     owner = relationship("User", back_populates="artifacts")
+    session = relationship("Session", back_populates="artifacts")
     metadata_entries = relationship("Metadata", back_populates="artifact", cascade="all, delete-orphan")
     vectors = relationship("VectorEmbedding", back_populates="artifact", cascade="all, delete-orphan")
 

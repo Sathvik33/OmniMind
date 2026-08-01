@@ -1,18 +1,15 @@
 """
 AegisEvaluator — RAGAS-powered evaluation engine for AEGIS v3.0.
 
-Uses Groq (llama3-8b-8192) as the evaluation LLM for:
+Judge LLM (configurable via RAGAS_LLM_PROVIDER):
+  - ollama (default): local Qwen via ChatOllama — preferred when Groq is rate-limited
+  - groq: cloud llama for faster remote judging
+
+Metrics (scored against retrieved contexts):
   - faithfulness       : Is the answer faithful to the retrieved context?
   - answer_relevancy   : How relevant is the answer to the question?
   - context_precision  : Are the retrieved chunks actually useful?
   - context_recall     : Was important context retrieved? (needs ground_truth)
-
-Architecture:
-  AegisEvaluator.evaluate_single()  → single Q&A evaluation
-  AegisEvaluator.evaluate_batch()   → batch evaluation returning DataFrame
-  AegisEvaluator.quick_score()      → fast faithfulness-only check
-
-All scores are logged to LangSmith via AegisTracer.
 """
 
 from __future__ import annotations
@@ -23,27 +20,27 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 RAGAS_THRESHOLD = float(os.getenv("RAGAS_EVALUATION_THRESHOLD", "0.5"))
 
+try:
+    from backend.app.core.config import RAGAS_LLM_PROVIDER, RAGAS_OLLAMA_MODEL, OLLAMA_MODEL
+except Exception:
+    RAGAS_LLM_PROVIDER = os.getenv("RAGAS_LLM_PROVIDER", "ollama").lower()
+    RAGAS_OLLAMA_MODEL = os.getenv("RAGAS_OLLAMA_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5:7b"))
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 
-# ── Optional imports (graceful fallback) ──────────────────────────────────────
 try:
     from ragas import evaluate as ragas_evaluate
-    from ragas.metrics import (
-        faithfulness,
-        answer_relevancy,
-        context_precision,
-        context_recall,
-    )
     from ragas.llms import LangchainLLMWrapper
     from datasets import Dataset
+
     _RAGAS_AVAILABLE = True
 except ImportError:
     _RAGAS_AVAILABLE = False
@@ -51,17 +48,22 @@ except ImportError:
 
 try:
     from langchain_groq import ChatGroq
+
     _GROQ_AVAILABLE = True
 except ImportError:
     _GROQ_AVAILABLE = False
-    logger.warning("langchain-groq not installed")
 
+try:
+    from langchain_ollama import ChatOllama
 
-# ── Result Dataclass ──────────────────────────────────────────────────────────
+    _OLLAMA_AVAILABLE = True
+except ImportError:
+    _OLLAMA_AVAILABLE = False
+    logger.warning("langchain-ollama not installed")
+
 
 @dataclass
 class EvalResult:
-    """Structured result from a RAGAS evaluation."""
     query: str
     answer: str
     faithfulness: Optional[float] = None
@@ -84,101 +86,135 @@ class EvalResult:
             "composite_score": round(self.composite_score, 4),
             "passed": self.passed,
             "error": self.error,
+            "judge": self.metadata.get("judge"),
         }
 
 
-# ── AegisEvaluator ────────────────────────────────────────────────────────────
-
 class AegisEvaluator:
-    """
-    RAGAS evaluation engine powered by Groq LLM.
+    """RAGAS evaluation with local Ollama Qwen as the default judge.
 
-    Usage:
-        evaluator = AegisEvaluator()
-        result = evaluator.evaluate_single(
-            query="What is AEGIS?",
-            answer="AEGIS is a multi-modal RAG system...",
-            contexts=["AEGIS stands for..."],
-            ground_truth="AEGIS is a multi-modal RAG engine"   # optional
-        )
-        print(result.composite_score)   # 0.0 to 1.0
+    Lazy: judge LLM / MiniLM are not loaded until the first evaluate_* call.
     """
 
-    def __init__(self):
+    def __init__(self, provider: Optional[str] = None):
         self._llm = None
-        self._metrics_with_gt  = []   # metrics that need ground_truth
-        self._metrics_no_gt    = []   # metrics that work without ground_truth
+        self._judge_name = "none"
+        self._metrics_with_gt = []
+        self._metrics_no_gt = []
+        self._provider = (provider or RAGAS_LLM_PROVIDER or "ollama").lower()
+        self._ready = False
+
+    @property
+    def judge_name(self) -> str:
+        return self._judge_name
+
+    def _ensure_ready(self) -> None:
+        if self._ready:
+            return
         self._setup()
+        self._ready = True
 
     def _setup(self) -> None:
-        """Initialize Groq LLM and RAGAS metrics."""
         if not _RAGAS_AVAILABLE:
-            logger.warning("RAGAS not available — evaluation will return fallback scores")
+            logger.warning("RAGAS not available — fallback scores only")
             return
 
-        if not _GROQ_AVAILABLE or not GROQ_API_KEY:
-            logger.warning("Groq not available/configured — evaluation will return fallback scores")
+        chat = None
+        if self._provider == "ollama":
+            # Stay local — do not fall back to Groq (rate limits / bad keys).
+            chat = self._make_ollama()
+        elif self._provider == "groq":
+            chat = self._make_groq()
+            if chat is None:
+                logger.warning("Groq judge unavailable — falling back to Ollama")
+                chat = self._make_ollama()
+        else:
+            chat = self._make_ollama() or self._make_groq()
+
+        if chat is None:
+            logger.warning("No judge LLM available — fallback scores only")
             return
 
         try:
-            groq_chat = ChatGroq(
-                api_key=GROQ_API_KEY,
-                model_name=GROQ_MODEL,
-                temperature=0.0,   # deterministic evaluation
-                max_tokens=1024,
-            )
-            self._llm = LangchainLLMWrapper(groq_chat)
-
-            # Create isolated metric instances (avoid mutating module-level singletons)
+            self._llm = LangchainLLMWrapper(chat)
             from ragas.metrics import Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
+
             _faithfulness = Faithfulness()
             _answer_relevancy = AnswerRelevancy()
             _context_precision = ContextPrecision()
             _context_recall = ContextRecall()
+            for m in (_faithfulness, _answer_relevancy, _context_precision, _context_recall):
+                m.llm = self._llm
 
-            # Wire the LLM into each metric instance
-            _faithfulness.llm        = self._llm
-            _answer_relevancy.llm    = self._llm
-            _context_precision.llm   = self._llm
-            _context_recall.llm      = self._llm
-
-            # Wire BGE-M3 embeddings (same multilingual model as retrieval) into RAGAS
             try:
+                # Lightweight local embedder for AnswerRelevancy — avoid loading BGE-M3
+                # (keeps RAM free for Ollama Qwen judge).
                 from ragas.embeddings import LangchainEmbeddingsWrapper
-                from langchain_core.embeddings import Embeddings
-                from backend.app.core.config import TEXT_EMBEDDING_MODEL
-                from backend.app.services.embedding_service import embedding_service
 
-                class BgeM3Embeddings(Embeddings):
-                    """Reuse the process-local BGE-M3 embedder for RAGAS metrics."""
+                try:
+                    from langchain_huggingface import HuggingFaceEmbeddings
+                except ImportError:
+                    from langchain_community.embeddings import HuggingFaceEmbeddings
 
-                    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-                        return [embedding_service.embed_text(t) for t in texts]
-
-                    def embed_query(self, text: str) -> List[float]:
-                        return embedding_service.embed_text(text)
-
-                ragas_embeddings = LangchainEmbeddingsWrapper(BgeM3Embeddings())
-
-                _faithfulness.embeddings = ragas_embeddings
-                _answer_relevancy.embeddings = ragas_embeddings
-                _context_precision.embeddings = ragas_embeddings
-                _context_recall.embeddings = ragas_embeddings
-                logger.info(f"RAGAS embeddings wired to {TEXT_EMBEDDING_MODEL}")
+                hf = HuggingFaceEmbeddings(
+                    model_name="sentence-transformers/all-MiniLM-L6-v2",
+                    model_kwargs={"device": "cpu"},
+                    encode_kwargs={"normalize_embeddings": True},
+                )
+                emb = LangchainEmbeddingsWrapper(hf)
+                for m in (_faithfulness, _answer_relevancy, _context_precision, _context_recall):
+                    if hasattr(m, "embeddings"):
+                        m.embeddings = emb
+                logger.info("RAGAS embeddings wired to all-MiniLM-L6-v2")
             except Exception as emb_err:
-                logger.warning(f"Could not wire BGE-M3 RAGAS embeddings: {emb_err}")
+                logger.warning("Could not wire MiniLM RAGAS embeddings: %s", emb_err)
 
-
-            self._metrics_no_gt   = [_faithfulness, _answer_relevancy]
-            self._metrics_with_gt = [_faithfulness, _answer_relevancy, _context_precision, _context_recall]
-
-            logger.info(f"✅ AegisEvaluator initialized with Groq model '{GROQ_MODEL}'")
+            self._metrics_no_gt = [_faithfulness, _answer_relevancy]
+            self._metrics_with_gt = [
+                _faithfulness,
+                _answer_relevancy,
+                _context_precision,
+                _context_recall,
+            ]
+            logger.info("AegisEvaluator ready — judge=%s", self._judge_name)
         except Exception as e:
-            logger.error(f"AegisEvaluator setup failed: {e}")
+            logger.error("AegisEvaluator setup failed: %s", e)
             self._llm = None
 
+    def _make_ollama(self):
+        if not _OLLAMA_AVAILABLE:
+            return None
+        model = RAGAS_OLLAMA_MODEL or OLLAMA_MODEL or "qwen2.5:7b"
+        try:
+            # Keep context short — RAGAS prompts are long; leave RAM for the model weights.
+            chat = ChatOllama(
+                model=model,
+                temperature=0.0,
+                num_predict=512,
+                num_ctx=4096,
+            )
+            # No smoke invoke — keep boot cheap; first RAGAS call warms the model.
+            self._judge_name = f"ollama:{model}"
+            return chat
+        except Exception as e:
+            logger.warning("Ollama judge init failed (%s): %s", model, e)
+            return None
 
-    # ── Public: Single Evaluation ─────────────────────────────────────────────
+    def _make_groq(self):
+        if not _GROQ_AVAILABLE or not GROQ_API_KEY:
+            return None
+        try:
+            chat = ChatGroq(
+                api_key=GROQ_API_KEY,
+                model_name=GROQ_MODEL,
+                temperature=0.0,
+                max_tokens=1024,
+            )
+            self._judge_name = f"groq:{GROQ_MODEL}"
+            return chat
+        except Exception as e:
+            logger.warning("Groq judge init failed: %s", e)
+            return None
 
     def evaluate_single(
         self,
@@ -188,38 +224,37 @@ class AegisEvaluator:
         ground_truth: Optional[str] = None,
         run_id: Optional[str] = None,
     ) -> EvalResult:
+        self._ensure_ready()
         result = EvalResult(query=query, answer=answer)
+        result.metadata["judge"] = self._judge_name
 
         if not self._llm or not _RAGAS_AVAILABLE:
             return self._fallback_score(result, contexts)
 
         try:
-            # Build RAGAS dataset supporting both 0.1.x and 0.2+ schema fields
             ref_val = ground_truth if ground_truth else answer
             dataset_dict: Dict[str, List] = {
-                "question":    [query],
-                "user_input":  [query],
-                "answer":      [answer],
-                "response":    [answer],
-                "contexts":    [contexts],
-                "reference":   [ref_val],
-                "ground_truth":[ref_val],
+                "question": [query],
+                "user_input": [query],
+                "answer": [answer],
+                "response": [answer],
+                "contexts": [contexts],
+                "retrieved_contexts": [contexts],
+                "reference": [ref_val],
+                "ground_truth": [ref_val],
             }
             metrics = self._metrics_with_gt if ground_truth else self._metrics_no_gt
-
-
             dataset = Dataset.from_dict(dataset_dict)
             eval_result = ragas_evaluate(dataset=dataset, metrics=metrics)
-
-            # Extract scores from the result DataFrame
             scores_df = eval_result.to_pandas()
             row = scores_df.iloc[0]
 
-            result.faithfulness      = self._safe_float(row, "faithfulness")
-            result.answer_relevancy  = self._safe_float(row, "answer_relevancy")
+            result.faithfulness = self._safe_float(row, "faithfulness")
+            result.answer_relevancy = self._safe_float(row, "answer_relevancy")
             result.context_precision = self._safe_float(row, "context_precision")
-            result.context_recall    = self._safe_float(row, "context_recall") if ground_truth else None
-
+            result.context_recall = (
+                self._safe_float(row, "context_recall") if ground_truth else None
+            )
             result.composite_score = self._compute_composite(
                 result.faithfulness,
                 result.answer_relevancy,
@@ -227,122 +262,47 @@ class AegisEvaluator:
                 result.context_recall,
             )
             result.passed = result.composite_score >= RAGAS_THRESHOLD
-
-            # Log to LangSmith
             if run_id:
                 self._log_to_langsmith(run_id, result)
-
         except Exception as e:
-            logger.error(f"RAGAS evaluation failed: {e}")
+            logger.error("RAGAS evaluation failed: %s", e)
             result.error = str(e)
             return self._fallback_score(result, contexts)
 
         return result
 
-    # ── Public: Batch Evaluation ──────────────────────────────────────────────
-
-    def evaluate_batch(
-        self,
-        samples: List[Dict[str, Any]],
-    ) -> List[EvalResult]:
-        """
-        Evaluate a list of Q&A pairs.
-
-        Each sample dict must have: question, answer, contexts
-        Optionally: ground_truth
-
-        Returns list of EvalResult objects.
-        """
+    def evaluate_batch(self, samples: List[Dict[str, Any]]) -> List[EvalResult]:
         results = []
         for i, sample in enumerate(samples):
-            logger.info(f"Evaluating sample {i+1}/{len(samples)}")
-            result = self.evaluate_single(
-                query=sample.get("question", ""),
-                answer=sample.get("answer", ""),
-                contexts=sample.get("contexts", []),
-                ground_truth=sample.get("ground_truth"),
+            logger.info("Evaluating sample %s/%s", i + 1, len(samples))
+            results.append(
+                self.evaluate_single(
+                    query=sample.get("question", ""),
+                    answer=sample.get("answer", ""),
+                    contexts=sample.get("contexts", []),
+                    ground_truth=sample.get("ground_truth"),
+                )
             )
-            results.append(result)
-
         return results
 
-    def evaluate_batch_ragas(
-        self,
-        samples: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        Batch evaluation using a single RAGAS call (more efficient).
-        Returns aggregate scores + per-sample results.
-        """
-        if not self._llm or not _RAGAS_AVAILABLE:
-            results = self.evaluate_batch(samples)
-            return self._aggregate_results(results)
-
-        has_gt = all("ground_truth" in s for s in samples)
-        dataset_dict = {
-            "question": [s.get("question", "") for s in samples],
-            "answer":   [s.get("answer", "") for s in samples],
-            "contexts": [s.get("contexts", []) for s in samples],
-        }
-        if has_gt:
-            dataset_dict["ground_truth"] = [s.get("ground_truth", "") for s in samples]
-
-        metrics = self._metrics_with_gt if has_gt else self._metrics_no_gt
-
-        try:
-            dataset = Dataset.from_dict(dataset_dict)
-            eval_result = ragas_evaluate(dataset=dataset, metrics=metrics)
-            df = eval_result.to_pandas()
-
-            per_sample = []
-            for i, row in df.iterrows():
-                r = EvalResult(
-                    query=samples[i].get("question", ""),
-                    answer=samples[i].get("answer", ""),
-                    faithfulness=self._safe_float(row, "faithfulness"),
-                    answer_relevancy=self._safe_float(row, "answer_relevancy"),
-                    context_precision=self._safe_float(row, "context_precision"),
-                    context_recall=self._safe_float(row, "context_recall") if has_gt else None,
-                )
-                r.composite_score = self._compute_composite(
-                    r.faithfulness, r.answer_relevancy, r.context_precision, r.context_recall
-                )
-                r.passed = r.composite_score >= RAGAS_THRESHOLD
-                per_sample.append(r)
-
-            return self._aggregate_results(per_sample)
-
-        except Exception as e:
-            logger.error(f"Batch RAGAS evaluation failed: {e}")
-            results = self.evaluate_batch(samples)
-            return self._aggregate_results(results)
-
-    # ── Public: Quick Score ───────────────────────────────────────────────────
+    def evaluate_batch_ragas(self, samples: List[Dict[str, Any]]) -> Dict[str, Any]:
+        # Prefer per-sample loop with local Ollama — more stable than one giant batch
+        results = self.evaluate_batch(samples)
+        agg = self._aggregate_results(results)
+        agg["judge"] = self._judge_name
+        return agg
 
     def quick_score(self, query: str, answer: str, contexts: List[str]) -> float:
-        """
-        Fast composite score without full RAGAS overhead.
-        Uses token overlap as a proxy for faithfulness.
-        Returns 0.0 to 1.0.
-        """
         if not contexts or not answer:
             return 0.0
-
-        # Token overlap proxy
         answer_tokens = set(answer.lower().split())
         context_tokens = set(" ".join(contexts).lower().split())
         if not answer_tokens:
             return 0.0
-
         overlap = len(answer_tokens & context_tokens) / len(answer_tokens)
-
-        # Length quality proxy (answers between 50–500 words are ideal)
         words = len(answer.split())
         length_score = 1.0 if 10 <= words <= 300 else 0.7
-
         return round((overlap * 0.7 + length_score * 0.3), 3)
-
-    # ── Private Helpers ───────────────────────────────────────────────────────
 
     def _compute_composite(
         self,
@@ -351,51 +311,47 @@ class AegisEvaluator:
         context_precision: Optional[float],
         context_recall: Optional[float],
     ) -> float:
-        """Weighted composite score from RAGAS metrics."""
-        scores = []
-        weights = []
-
+        scores, weights = [], []
         if faithfulness is not None:
-            scores.append(faithfulness);      weights.append(0.35)
+            scores.append(faithfulness)
+            weights.append(0.35)
         if answer_relevancy is not None:
-            scores.append(answer_relevancy);  weights.append(0.30)
+            scores.append(answer_relevancy)
+            weights.append(0.30)
         if context_precision is not None:
-            scores.append(context_precision); weights.append(0.20)
+            scores.append(context_precision)
+            weights.append(0.20)
         if context_recall is not None:
-            scores.append(context_recall);    weights.append(0.15)
-
+            scores.append(context_recall)
+            weights.append(0.15)
         if not scores:
             return 0.0
-
-        total_weight = sum(weights)
-        composite = sum(s * w for s, w in zip(scores, weights)) / total_weight
-        return round(composite, 4)
+        return round(sum(s * w for s, w in zip(scores, weights)) / sum(weights), 4)
 
     def _safe_float(self, row: Any, col: str) -> Optional[float]:
-        """Safely extract a float from a DataFrame row."""
         try:
             v = row.get(col) if hasattr(row, "get") else getattr(row, col, None)
-            return round(float(v), 4) if v is not None and not (v != v) else None  # NaN check
+            return round(float(v), 4) if v is not None and not (v != v) else None
         except Exception:
             return None
 
     def _fallback_score(self, result: EvalResult, contexts: List[str]) -> EvalResult:
-        """Return a proxy score when RAGAS is not available."""
         proxy = self.quick_score(result.query, result.answer, contexts)
         result.faithfulness = proxy
         result.answer_relevancy = proxy
         result.composite_score = proxy
         result.passed = proxy >= RAGAS_THRESHOLD
         result.metadata["fallback"] = True
+        result.metadata["judge"] = self._judge_name
         return result
 
-
     def _aggregate_results(self, results: List[EvalResult]) -> Dict[str, Any]:
-        """Compute aggregate statistics across all results."""
         if not results:
-            return {"total": 0}
+            return {"total": 0, "judge": self._judge_name}
 
-        def avg(vals): return round(sum(v for v in vals if v is not None) / max(1, sum(1 for v in vals if v is not None)), 4)
+        def avg(vals):
+            nums = [v for v in vals if v is not None]
+            return round(sum(nums) / max(1, len(nums)), 4) if nums else None
 
         return {
             "total": len(results),
@@ -406,24 +362,27 @@ class AegisEvaluator:
             "avg_answer_relevancy": avg([r.answer_relevancy for r in results]),
             "avg_context_precision": avg([r.context_precision for r in results]),
             "avg_context_recall": avg([r.context_recall for r in results]),
+            "judge": self._judge_name,
             "per_sample": [r.to_dict() for r in results],
         }
 
     def _log_to_langsmith(self, run_id: str, result: EvalResult) -> None:
-        """Log RAGAS scores to LangSmith."""
         try:
             from backend.app.monitoring.langsmith_logger import tracer
+
             tracer.log_evaluation(
                 run_id=run_id,
                 eval_scores={
-                    k: v for k, v in {
+                    k: v
+                    for k, v in {
                         "faithfulness": result.faithfulness,
                         "answer_relevancy": result.answer_relevancy,
                         "context_precision": result.context_precision,
                         "context_recall": result.context_recall,
-                    }.items() if v is not None
+                    }.items()
+                    if v is not None
                 },
                 composite_score=result.composite_score,
             )
         except Exception as e:
-            logger.debug(f"Failed to log eval to LangSmith: {e}")
+            logger.debug("Failed to log eval to LangSmith: %s", e)

@@ -37,6 +37,11 @@ RRF_K            = 60   # Reciprocal Rank Fusion constant
 APP_ENV       = os.getenv("APP_ENV", "development").lower()
 USE_LOCAL_LLM = os.getenv("USE_LOCAL_LLM", "true").lower() == "true"
 
+# ── Auth (JWT) ────────────────────────────────────────────────────────────────
+JWT_SECRET = os.getenv("JWT_SECRET", "aegis-dev-change-me")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "7"))
+
 # ── LLM (Ollama — primary) ────────────────────────────────────────────────────
 OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_TEMP     = float(os.getenv("OLLAMA_TEMP", "0.2"))
@@ -80,3 +85,6 @@ EMBEDDING_CACHE_VERSION = os.getenv("EMBEDDING_CACHE_VERSION", "v1")
 RAGAS_EVALUATION_THRESHOLD = float(os.getenv("RAGAS_EVALUATION_THRESHOLD", "0.5"))
 RAGAS_ASYNC_MODE           = os.getenv("RAGAS_ASYNC_MODE", "true").lower() == "true"
 RAGAS_METRICS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+# Judge LLM for RAGAS — prefer local Qwen (avoids Groq rate limits)
+RAGAS_LLM_PROVIDER = os.getenv("RAGAS_LLM_PROVIDER", "ollama").lower()  # ollama | groq
+RAGAS_OLLAMA_MODEL = os.getenv("RAGAS_OLLAMA_MODEL", OLLAMA_MODEL)

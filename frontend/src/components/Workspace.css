@@ -6,6 +6,7 @@
   margin: 0 auto;
   padding: clamp(1rem, 2.5vw, 1.75rem);
   gap: 1rem;
+  width: 100%;
 }
 
 .workspace__top {

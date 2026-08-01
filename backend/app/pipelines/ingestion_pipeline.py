@@ -201,10 +201,27 @@ class MultimodalIngestionPipeline:
 
         # 3. CHUNKING & EMBEDDING Stage
         notify("CHUNKING_EMBEDDING")
+        ingest_run_id = None
         try:
+            from backend.app.monitoring.langsmith_logger import tracer as aegis_tracer
+
+            if aegis_tracer.is_active():
+                ingest_run_id = aegis_tracer.start_ingest_run(
+                    filename=artifact.filename,
+                    artifact_id=artifact.id,
+                    metadata={"modality": artifact.modality},
+                )
+        except Exception:
+            ingest_run_id = None
+
+        try:
+            import time as _time
+
+            t_chunk = _time.perf_counter()
             chunker = MarkdownHierarchicalChunker()
             chunks = chunker.chunk(markdown_content, artifact_name=artifact.filename)
             max_chunks = int(os.getenv("MAX_INGEST_CHUNKS", "200"))
+            truncated_to = None
             if len(chunks) > max_chunks:
                 logger.warning(
                     "Truncating chunks for %s from %s to %s",
@@ -212,7 +229,28 @@ class MultimodalIngestionPipeline:
                     len(chunks),
                     max_chunks,
                 )
+                truncated_to = max_chunks
                 chunks = chunks[:max_chunks]
+
+            if ingest_run_id:
+                try:
+                    from backend.app.monitoring.langsmith_logger import tracer as aegis_tracer
+
+                    aegis_tracer.log_chunking(
+                        run_id=ingest_run_id,
+                        filename=artifact.filename,
+                        chunk_count=len(chunks),
+                        truncated_to=truncated_to,
+                        markdown_chars=len(markdown_content or ""),
+                        sample_hierarchies=[
+                            (c.get("metadata") or {}).get("hierarchy", "")
+                            for c in chunks[:8]
+                        ],
+                        sample_previews=[(c.get("text") or "")[:200] for c in chunks[:5]],
+                        latency_ms=round((_time.perf_counter() - t_chunk) * 1000, 2),
+                    )
+                except Exception as ls_err:
+                    logger.debug("LangSmith chunking log skipped: %s", ls_err)
 
             logger.info(
                 "Embedding %s text chunks for artifact %s (%s)",
@@ -260,9 +298,21 @@ class MultimodalIngestionPipeline:
                     f"No embeddable content extracted from {artifact.filename}",
                     stage="CHUNKING_EMBEDDING",
                 )
-        except NonRetryableIngestionError:
+        except NonRetryableIngestionError as e:
+            if ingest_run_id:
+                try:
+                    from backend.app.monitoring.langsmith_logger import tracer as aegis_tracer
+                    aegis_tracer.end_ingest_run(ingest_run_id, error=str(e))
+                except Exception:
+                    pass
             raise
         except Exception as e:
+            if ingest_run_id:
+                try:
+                    from backend.app.monitoring.langsmith_logger import tracer as aegis_tracer
+                    aegis_tracer.end_ingest_run(ingest_run_id, error=str(e))
+                except Exception:
+                    pass
             raise NonRetryableIngestionError(f"Chunking or embedding failed: {e}", stage="CHUNKING_EMBEDDING")
 
         # 4. STORING Stage
@@ -272,8 +322,22 @@ class MultimodalIngestionPipeline:
             for vec in vectors_to_add:
                 db.add(vec)
             db.commit()
+            if ingest_run_id:
+                try:
+                    from backend.app.monitoring.langsmith_logger import tracer as aegis_tracer
+                    aegis_tracer.end_ingest_run(
+                        ingest_run_id, chunk_count=len(vectors_to_add)
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             db.rollback()
+            if ingest_run_id:
+                try:
+                    from backend.app.monitoring.langsmith_logger import tracer as aegis_tracer
+                    aegis_tracer.end_ingest_run(ingest_run_id, error=str(e))
+                except Exception:
+                    pass
             raise RetryableIngestionError(f"Database vector insertion failed: {e}", stage="STORING")
         
         if md_path and os.path.exists(md_path):

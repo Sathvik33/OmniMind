@@ -1,31 +1,53 @@
 """
 Evaluate API — RAGAS evaluation endpoints for AEGIS v3.0.
 
+Opt-in only: nothing is constructed at import/startup. The judge LLM and
+MiniLM embeddings load on the first POST to /evaluate* (or via CLI scripts).
+
 Endpoints:
   POST /evaluate              — evaluate a single Q&A pair
   POST /evaluate/batch        — batch evaluate multiple Q&A pairs
   POST /evaluate/live         — run questions through live pipeline + evaluate
-  GET  /evaluate/health       — evaluator status check
+  GET  /evaluate/health       — status (does not start the judge)
 """
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 
-from backend.app.evaluation.ragas_evaluator import AegisEvaluator
-from backend.app.evaluation.eval_dataset import EvalDataset
-from backend.app.evaluation.eval_runner import EvalRunner
-
 router = APIRouter(prefix="/evaluate", tags=["Evaluation"])
 
-# Singletons (constructed once)
-_evaluator = AegisEvaluator()
-_runner    = EvalRunner()   # pipeline injected later via set_pipeline()
+_evaluator = None
+_runner = None
+_pipeline = None
 
 
 def set_pipeline(pipeline) -> None:
-    """Called from main.py startup to inject pipeline into eval runner."""
-    _runner.pipeline = pipeline
+    """Optional: inject QueryPipeline for /evaluate/live (no RAGAS init)."""
+    global _pipeline, _runner
+    _pipeline = pipeline
+    if _runner is not None:
+        _runner.pipeline = pipeline
+
+
+def _get_evaluator():
+    global _evaluator
+    if _evaluator is None:
+        from backend.app.evaluation.ragas_evaluator import AegisEvaluator
+
+        _evaluator = AegisEvaluator()
+    return _evaluator
+
+
+def _get_runner():
+    global _runner
+    if _runner is None:
+        from backend.app.evaluation.eval_runner import EvalRunner
+
+        _runner = EvalRunner(pipeline=_pipeline)
+    elif _pipeline is not None and _runner.pipeline is None:
+        _runner.pipeline = _pipeline
+    return _runner
 
 
 # ── Request / Response Models ─────────────────────────────────────────────────
@@ -67,17 +89,15 @@ class LiveEvalRequest(BaseModel):
 
 @router.get("/health")
 def eval_health():
-    """Check RAGAS evaluator status."""
+    """Report eval availability without starting the judge LLM."""
     return {
-        "evaluator_active": _evaluator._llm is not None,
-        "groq_model": "llama-3.1-8b-instant",
-
-        "metrics": ["faithfulness", "answer_relevancy", "context_precision", "context_recall"],
+        "evaluator_loaded": _evaluator is not None and getattr(_evaluator, "_llm", None) is not None,
+        "opt_in": True,
         "message": (
-            "RAGAS evaluator ready with Groq LLM"
-            if _evaluator._llm is not None
-            else "Running in fallback mode (Groq not configured)"
+            "RAGAS runs only on POST /evaluate*, CLI scripts, or query with evaluate=true. "
+            "Not started at API boot."
         ),
+        "metrics": ["faithfulness", "answer_relevancy", "context_precision", "context_recall"],
     }
 
 
@@ -94,7 +114,8 @@ def evaluate_single(request: EvalRequest):
     """
     try:
         from backend.app.core.config import RAGAS_EVALUATION_THRESHOLD
-        result = _evaluator.evaluate_single(
+
+        result = _get_evaluator().evaluate_single(
             query=request.query,
             answer=request.answer,
             contexts=request.contexts,
@@ -125,7 +146,7 @@ def evaluate_batch(request: BatchEvalRequest):
     Returns aggregate scores and per-sample breakdowns.
     """
     try:
-        return _evaluator.evaluate_batch_ragas(request.samples)
+        return _get_evaluator().evaluate_batch_ragas(request.samples)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Batch evaluation failed: {str(e)}")
 
@@ -134,24 +155,28 @@ def evaluate_batch(request: BatchEvalRequest):
 def evaluate_live(request: LiveEvalRequest, background_tasks: BackgroundTasks):
     """
     Run questions through the live AEGIS pipeline and evaluate with RAGAS.
-
-    NOTE: This requires the pipeline to be available (set at startup).
-    For large question sets, consider running in background.
     """
-    if not _runner.pipeline:
+    runner = _get_runner()
+    if not runner.pipeline:
+        from backend.app.api.query import pipeline as query_pipeline
+
+        runner.pipeline = query_pipeline
+        set_pipeline(query_pipeline)
+
+    if not runner.pipeline:
         raise HTTPException(
             status_code=503,
-            detail="Live evaluation unavailable: pipeline not initialized"
+            detail="Live evaluation unavailable: pipeline not initialized",
         )
 
     if len(request.questions) > 10:
         raise HTTPException(
             status_code=422,
-            detail="Live evaluation limited to 10 questions per request to avoid timeout. Use /evaluate/batch for larger sets."
+            detail="Live evaluation limited to 10 questions per request to avoid timeout. Use /evaluate/batch for larger sets.",
         )
 
     try:
-        report = _runner.run_live(
+        report = runner.run_live(
             questions=request.questions,
             ground_truths=request.ground_truths,
         )

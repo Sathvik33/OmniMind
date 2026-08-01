@@ -43,9 +43,9 @@ export function Landing({ onEnter }: Props) {
             transition={{ duration: 0.6, delay: 0.32, ease: [0.22, 1, 0.36, 1] }}
           >
             <button type="button" className="btn-primary" onClick={onEnter}>
-              Start a conversation
+              Log in to start
             </button>
-            <span className="landing__hint">PDF, slides, images, video</span>
+            <span className="landing__hint">Your chats · your uploads · scoped answers</span>
           </motion.div>
         </div>
 

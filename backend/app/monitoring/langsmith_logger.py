@@ -18,6 +18,7 @@ import time
 import uuid
 import logging
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -40,6 +41,30 @@ _API_KEY  = os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY", "")
 _PROJECT  = os.getenv("LANGCHAIN_PROJECT", "Aegis")
 _ENDPOINT = os.getenv("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com")
 _TRACING  = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
+
+
+def _utc_now() -> datetime:
+    """LangSmith expects timezone-aware datetime, not time.time() floats."""
+    return datetime.now(timezone.utc)
+
+
+def _finish_run(client: "LangSmithClient", run_id: str, **kwargs: Any) -> None:
+    """Always close a run; log failures loudly so traces don't stay 'running'."""
+    payload = {"end_time": _utc_now(), **kwargs}
+    try:
+        client.update_run(run_id, **payload)
+    except Exception as e:
+        logger.warning("LangSmith update_run failed for %s: %s", run_id, e)
+        # Retry with minimal close so the parent does not hang forever
+        try:
+            client.update_run(run_id, end_time=_utc_now(), error=str(e))
+        except Exception as e2:
+            logger.error("LangSmith forced close also failed for %s: %s", run_id, e2)
+
+
+def _preview(text: str, n: int = 280) -> str:
+    t = (text or "").replace("\n", " ").strip()
+    return t if len(t) <= n else t[: n - 3] + "..."
 
 
 # ── Singleton Tracer ──────────────────────────────────────────────────────────
@@ -118,9 +143,10 @@ class AegisTracer:
                     id=run_id,
                     inputs={"query": query, **(metadata or {})},
                     tags=["aegis", "rag", "v3"],
+                    start_time=_utc_now(),
                 )
             except Exception as e:
-                logger.debug(f"LangSmith start_run failed: {e}")
+                logger.warning(f"LangSmith start_run failed: {e}")
 
         return run_id
 
@@ -145,15 +171,111 @@ class AegisTracer:
         }
 
         if self._client:
+            _finish_run(
+                self._client,
+                run_id,
+                outputs=outputs,
+                error=error,
+            )
+
+    # ── Public: Ingest lifecycle ──────────────────────────────────────────────
+
+    def start_ingest_run(
+        self,
+        filename: str,
+        artifact_id: int,
+        metadata: Optional[Dict] = None,
+    ) -> str:
+        """Start an ingestion trace (chunking / embedding)."""
+        run_id = str(uuid.uuid4())
+        self._active_runs[run_id] = {
+            "run_id": run_id,
+            "filename": filename,
+            "artifact_id": artifact_id,
+            "start_time": time.perf_counter(),
+            "metadata": metadata or {},
+            "steps": [],
+        }
+        if self._client:
             try:
-                self._client.update_run(
-                    run_id=run_id,
-                    outputs=outputs,
-                    error=error,
-                    end_time=time.time(),
+                self._client.create_run(
+                    name="aegis_ingest",
+                    run_type="chain",
+                    project_name=_PROJECT,
+                    id=run_id,
+                    inputs={
+                        "filename": filename,
+                        "artifact_id": artifact_id,
+                        **(metadata or {}),
+                    },
+                    tags=["aegis", "ingest", "chunking", "v3"],
+                    start_time=_utc_now(),
                 )
             except Exception as e:
-                logger.debug(f"LangSmith end_run failed: {e}")
+                logger.warning("LangSmith start_ingest_run failed: %s", e)
+        return run_id
+
+    def end_ingest_run(
+        self,
+        run_id: str,
+        chunk_count: int = 0,
+        error: Optional[str] = None,
+    ) -> None:
+        run_data = self._active_runs.pop(run_id, {})
+        latency_ms = None
+        if run_data.get("start_time"):
+            latency_ms = round((time.perf_counter() - run_data["start_time"]) * 1000, 2)
+        if self._client:
+            _finish_run(
+                self._client,
+                run_id,
+                outputs={
+                    "chunk_count": chunk_count,
+                    "latency_ms": latency_ms,
+                    "steps_count": len(run_data.get("steps", [])),
+                },
+                error=error,
+            )
+
+    def log_chunking(
+        self,
+        run_id: str,
+        filename: str,
+        chunk_count: int,
+        truncated_to: Optional[int] = None,
+        markdown_chars: int = 0,
+        sample_hierarchies: Optional[List[str]] = None,
+        sample_previews: Optional[List[str]] = None,
+        latency_ms: Optional[float] = None,
+        chunker: str = "MarkdownHierarchicalChunker",
+    ) -> None:
+        """Log document chunking under an ingest (or query) parent run."""
+        step = {
+            "step": "chunking",
+            "filename": filename,
+            "chunk_count": chunk_count,
+            "truncated_to": truncated_to,
+            "latency_ms": latency_ms,
+        }
+        self._append_step(run_id, step)
+        self._child_run(
+            parent_run_id=run_id,
+            name="document_chunking",
+            run_type="chain",
+            inputs={
+                "filename": filename,
+                "chunker": chunker,
+                "markdown_chars": markdown_chars,
+            },
+            outputs={
+                "chunk_count": chunk_count,
+                "truncated_to": truncated_to,
+                "sample_hierarchies": (sample_hierarchies or [])[:8],
+                "sample_previews": (sample_previews or [])[:5],
+                "latency_ms": latency_ms,
+            },
+            tags=["chunking", "ingest", "markdown"],
+        )
 
     # ── Public: Step Logging ──────────────────────────────────────────────────
 
@@ -166,8 +288,13 @@ class AegisTracer:
         bm25_weight: float = 0.4,
         dense_weight: float = 0.6,
         latency_ms: Optional[float] = None,
+        bm25_previews: Optional[List[str]] = None,
+        dense_previews: Optional[List[str]] = None,
+        fused_previews: Optional[List[str]] = None,
+        artifact_ids: Optional[List[int]] = None,
+        query: Optional[str] = None,
     ) -> None:
-        """Log hybrid retrieval metrics."""
+        """Log hybrid retrieval metrics (+ optional chunk previews)."""
         step = {
             "step": "retrieval",
             "bm25_hits": bm25_hits,
@@ -179,27 +306,47 @@ class AegisTracer:
         }
         self._append_step(run_id, step)
 
-        if self._client:
-            try:
-                child_id = str(uuid.uuid4())
-                self._client.create_run(
-                    name="hybrid_retrieval",
-                    run_type="retriever",
-                    project_name=_PROJECT,
-                    id=child_id,
-                    parent_run_id=run_id,
-                    inputs={"bm25_weight": bm25_weight, "dense_weight": dense_weight},
-                    outputs={
-                        "bm25_hits": bm25_hits,
-                        "dense_hits": dense_hits,
-                        "fused_count": fused_count,
-                        "latency_ms": latency_ms,
-                    },
-                    tags=["retrieval", "hybrid", "bm25", "dense"],
-                )
-                self._client.update_run(run_id=child_id, end_time=time.time())
-            except Exception as e:
-                logger.debug(f"LangSmith log_retrieval failed: {e}")
+        self._child_run(
+            parent_run_id=run_id,
+            name="bm25_retrieve",
+            run_type="retriever",
+            inputs={"query": query or "", "artifact_ids": artifact_ids or []},
+            outputs={
+                "hits": bm25_hits,
+                "previews": [_preview(p) for p in (bm25_previews or [])[:8]],
+            },
+            tags=["retrieval", "bm25"],
+        )
+        self._child_run(
+            parent_run_id=run_id,
+            name="dense_retrieve",
+            run_type="retriever",
+            inputs={"query": query or "", "artifact_ids": artifact_ids or []},
+            outputs={
+                "hits": dense_hits,
+                "previews": [_preview(p) for p in (dense_previews or [])[:8]],
+            },
+            tags=["retrieval", "dense", "pgvector"],
+        )
+        self._child_run(
+            parent_run_id=run_id,
+            name="hybrid_retrieval",
+            run_type="retriever",
+            inputs={
+                "query": query or "",
+                "bm25_weight": bm25_weight,
+                "dense_weight": dense_weight,
+                "artifact_ids": artifact_ids or [],
+            },
+            outputs={
+                "bm25_hits": bm25_hits,
+                "dense_hits": dense_hits,
+                "fused_count": fused_count,
+                "fused_previews": [_preview(p) for p in (fused_previews or [])[:8]],
+                "latency_ms": latency_ms,
+            },
+            tags=["retrieval", "hybrid", "rrf"],
+        )
 
     def log_rerank(
         self,
@@ -207,10 +354,12 @@ class AegisTracer:
         input_count: int,
         output_count: int,
         scores: List[float],
-        model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        model: str = "BAAI/bge-reranker-v2-m3",
         latency_ms: Optional[float] = None,
+        documents: Optional[List[Dict[str, Any]]] = None,
+        query: Optional[str] = None,
     ) -> None:
-        """Log reranker metrics."""
+        """Log reranker metrics (+ ranked chunk previews)."""
         step = {
             "step": "rerank",
             "input_count": input_count,
@@ -221,28 +370,38 @@ class AegisTracer:
         }
         self._append_step(run_id, step)
 
-        if self._client:
-            try:
-                child_id = str(uuid.uuid4())
-                self._client.create_run(
-                    name="cross_encoder_rerank",
-                    run_type="chain",
-                    project_name=_PROJECT,
-                    id=child_id,
-                    parent_run_id=run_id,
-                    inputs={"input_count": input_count, "model": model},
-                    outputs={
-                        "output_count": output_count,
-                        "score_mean": round(sum(scores) / len(scores), 4) if scores else 0.0,
-                        "score_min": round(min(scores), 4) if scores else 0.0,
-                        "score_max": round(max(scores), 4) if scores else 0.0,
-                        "latency_ms": latency_ms,
-                    },
-                    tags=["reranking", "cross-encoder"],
+        ranked = []
+        for i, doc in enumerate(documents or []):
+            if isinstance(doc, dict):
+                ranked.append(
+                    {
+                        "rank": i + 1,
+                        "score": doc.get("score"),
+                        "preview": _preview(str(doc.get("text") or doc.get("preview") or "")),
+                    }
                 )
-                self._client.update_run(run_id=child_id, end_time=time.time())
-            except Exception as e:
-                logger.debug(f"LangSmith log_rerank failed: {e}")
+            else:
+                ranked.append({"rank": i + 1, "preview": _preview(str(doc))})
+
+        self._child_run(
+            parent_run_id=run_id,
+            name="cross_encoder_rerank",
+            run_type="chain",
+            inputs={
+                "query": query or "",
+                "input_count": input_count,
+                "model": model,
+            },
+            outputs={
+                "output_count": output_count,
+                "score_mean": round(sum(scores) / len(scores), 4) if scores else 0.0,
+                "score_min": round(min(scores), 4) if scores else 0.0,
+                "score_max": round(max(scores), 4) if scores else 0.0,
+                "ranked": ranked[:10],
+                "latency_ms": latency_ms,
+            },
+            tags=["reranking", "cross-encoder"],
+        )
 
     def log_generation(
         self,
@@ -279,7 +438,7 @@ class AegisTracer:
                     },
                     tags=["generation", "llm"],
                 )
-                self._client.update_run(run_id=child_id, end_time=time.time())
+                self._client.update_run(run_id=child_id, end_time=_utc_now())
             except Exception as e:
                 logger.debug(f"LangSmith log_generation failed: {e}")
 
@@ -326,7 +485,7 @@ class AegisTracer:
                     },
                     tags=["guardrails", "safety"],
                 )
-                self._client.update_run(run_id=child_id, end_time=time.time())
+                self._client.update_run(run_id=child_id, end_time=_utc_now())
             except Exception as e:
                 logger.debug(f"LangSmith log_guardrails failed: {e}")
 
@@ -360,7 +519,7 @@ class AegisTracer:
                     },
                     tags=["evaluation", "ragas"],
                 )
-                self._client.update_run(run_id=child_id, end_time=time.time())
+                self._client.update_run(run_id=child_id, end_time=_utc_now())
             except Exception as e:
                 logger.debug(f"LangSmith log_evaluation failed: {e}")
 
@@ -449,6 +608,34 @@ class AegisTracer:
         }
 
     # ── Private helpers ───────────────────────────────────────────────────────
+
+    def _child_run(
+        self,
+        parent_run_id: str,
+        name: str,
+        run_type: str,
+        inputs: Dict[str, Any],
+        outputs: Dict[str, Any],
+        tags: Optional[List[str]] = None,
+    ) -> None:
+        if not self._client or not parent_run_id:
+            return
+        try:
+            child_id = str(uuid.uuid4())
+            self._client.create_run(
+                name=name,
+                run_type=run_type,
+                project_name=_PROJECT,
+                id=child_id,
+                parent_run_id=parent_run_id,
+                inputs=inputs,
+                outputs=outputs,
+                tags=tags or [],
+                start_time=_utc_now(),
+            )
+            self._client.update_run(run_id=child_id, end_time=_utc_now())
+        except Exception as e:
+            logger.debug("LangSmith child run %s failed: %s", name, e)
 
     def _append_step(self, run_id: str, step: Dict[str, Any]) -> None:
         if run_id in self._active_runs:

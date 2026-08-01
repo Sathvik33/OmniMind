@@ -38,14 +38,25 @@ class EvalRunner:
     - A list of questions (generates answers live via pipeline)
     """
 
-    def __init__(self, pipeline=None):
+    def __init__(self, pipeline=None, evaluator: Optional[AegisEvaluator] = None):
         """
         Args:
             pipeline: QueryPipeline instance (optional).
                       Required if running live evaluation (generate answers).
+            evaluator: Optional pre-built evaluator (lazy-created on first use).
         """
-        self.pipeline  = pipeline
-        self.evaluator = AegisEvaluator()
+        self.pipeline = pipeline
+        self._evaluator = evaluator
+
+    @property
+    def evaluator(self) -> AegisEvaluator:
+        if self._evaluator is None:
+            self._evaluator = AegisEvaluator()
+        return self._evaluator
+
+    @evaluator.setter
+    def evaluator(self, value: AegisEvaluator) -> None:
+        self._evaluator = value
 
     # ── Public: Run Evaluation ────────────────────────────────────────────────
 
@@ -142,6 +153,7 @@ class EvalRunner:
             "avg_answer_relevancy": aggregate.get("avg_answer_relevancy"),
             "avg_context_precision": aggregate.get("avg_context_precision"),
             "avg_context_recall":  aggregate.get("avg_context_recall"),
+            "judge":               aggregate.get("judge"),
         }
 
         return {

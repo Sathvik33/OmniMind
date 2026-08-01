@@ -23,6 +23,28 @@ Operator runbook: [`../docs/GUIDE.md`](../docs/GUIDE.md)
 
 ---
 
+## Auth & chat-scoped retrieval
+
+Aegis isolates RAG context **per chat**, not by putting each user in a separate vector database.
+
+| Piece | Behavior |
+|-------|----------|
+| Auth | `POST /auth/signup`, `POST /auth/login`, `GET /auth/me` — email + password, JWT Bearer |
+| Chats | `GET/POST /chats`, `GET/DELETE /chats/{id}` — sidebar history |
+| Upload | Requires auth + `session_id` form field; sets `Artifact.user_id` + `session_id` |
+| Query | Requires auth + `session_id`; retrieves **only** completed embeddings for that chat |
+
+```text
+User → Chat A (pdf1) → vectors filtered by artifact_ids ∈ Chat A
+     → Chat B (pdf2) → never sees pdf1
+```
+
+Env: `JWT_SECRET`, `JWT_EXPIRE_DAYS` (see `.env.example`).
+
+Migrate: `alembic -c backend/alembic.ini upgrade head`
+
+---
+
 ## Design principles
 
 1. **Grounding first** — answers must come from uploaded artifacts; empty/weak context refuses or hedges.

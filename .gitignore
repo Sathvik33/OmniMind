@@ -94,3 +94,7 @@ scratch/
 
 # Docs / scratch notes (local)
 Tools.md
+
+# Eval reports / samples (keep folder via .gitkeep)
+docs/eval/*
+!docs/eval/.gitkeep

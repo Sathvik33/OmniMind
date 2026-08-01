@@ -15,7 +15,7 @@ from typing import Dict, Any
 MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
 
 ALLOWED_EXTENSIONS = {
-    ".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".txt",
+    ".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".txt", ".md",
     ".png", ".jpg", ".jpeg",
     ".mp4", ".avi", ".mov",
 }

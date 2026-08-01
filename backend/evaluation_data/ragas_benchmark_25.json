@@ -1,0 +1,202 @@
+[
+  {
+    "question": "What does Aegis use for hybrid retrieval?",
+    "answer": "Aegis fuses BM25 sparse retrieval with dense BGE-M3 embeddings using Reciprocal Rank Fusion, then applies a cross-encoder reranker.",
+    "contexts": [
+      "Aegis retrieval stack: BM25 lexical search over text chunks combined with dense cosine search on BGE-M3 1024-d embeddings. Scores are merged with Reciprocal Rank Fusion (RRF_K=60). Top candidates are reranked with BAAI/bge-reranker-v2-m3."
+    ],
+    "ground_truth": "BM25 plus dense BGE-M3 fused with RRF, then cross-encoder reranking."
+  },
+  {
+    "question": "How are document chunks sized in Aegis?",
+    "answer": "Documents are chunked with a Markdown hierarchical splitter using about 600 tokens and 60-token overlap, merging fragments under 120 characters.",
+    "contexts": [
+      "Production document chunking uses MarkdownHierarchicalChunker: MarkdownNodeParser then SentenceSplitter(chunk_size=600, chunk_overlap=60). Tiny header/date-only fragments under 120 substantive characters are merged."
+    ],
+    "ground_truth": "600 token chunks with 60 overlap; merge fragments under 120 characters."
+  },
+  {
+    "question": "Which embedding models does Aegis use?",
+    "answer": "Text uses BAAI/bge-m3 at 1024 dimensions. Images and video frames use ViT-B-16-SigLIP at 768 dimensions.",
+    "contexts": [
+      "EmbeddingService loads BAAI/bge-m3 for text (1024-d) and open_clip ViT-B-16-SigLIP webli for vision (768-d). Vector rows store embedding_type text or vision."
+    ],
+    "ground_truth": "BGE-M3 (1024) for text and SigLIP (768) for vision."
+  },
+  {
+    "question": "How does video ingestion build searchable segments?",
+    "answer": "Whisper ASR speech is merged into about 30-second windows, keyframes are captioned with Groq vision, and unused captions are kept as their own temporal segments.",
+    "contexts": [
+      "VideoService probes duration, runs Groq Whisper ASR into ~30s windows, extracts keyframes every 8s (max 20), captions with Groq vision, then merges. Unused keyframe captions become caption-only segments with temporal metadata."
+    ],
+    "ground_truth": "ASR ~30s windows plus keyframe captions; visual-only segments are retained."
+  },
+  {
+    "question": "Why keep visual-only video segments when ASR exists?",
+    "answer": "Object questions like cars or people often never appear in speech, so dropping unused captions removes the only evidence for those questions.",
+    "contexts": [
+      "Earlier ASR-first merge discarded unused captions. Object Q&A failed when speech did not mention the object. Aegis now always indexes leftover keyframe captions as visual-only rows."
+    ],
+    "ground_truth": "So objects mentioned only visually remain retrievable."
+  },
+  {
+    "question": "How are point-in-time video queries handled?",
+    "answer": "Natural language times like at 10 seconds are parsed and expanded by plus or minus 8 seconds so they overlap coarse ASR and keyframe windows.",
+    "contexts": [
+      "_detect_time parses 'at 10 second', 'at 10s', 'first minute', and MM:SS. Point queries expand with _POINT_PAD_SEC=8. Temporal SQL overlaps start_time/end_time on artifact_metadata."
+    ],
+    "ground_truth": "Parse the time reference and pad ±8 seconds for metadata overlap search."
+  },
+  {
+    "question": "What stores original uploaded files?",
+    "answer": "MinIO object storage holds the original bytes; PostgreSQL with pgvector stores embeddings and metadata.",
+    "contexts": [
+      "Upload flow: validate file, put object in MinIO, create Artifact and IngestionJob, Celery downloads from MinIO for processing. Vectors land in Postgres pgvector."
+    ],
+    "ground_truth": "MinIO for files; Postgres/pgvector for embeddings."
+  },
+  {
+    "question": "How does chat-scoped retrieval reduce hallucination?",
+    "answer": "Each chat owns its uploads. Queries resolve artifact_ids for that session only, so other chats and users never enter the context window.",
+    "contexts": [
+      "Authenticated queries require session_id. resolve_session_artifact_ids returns completed embeddings for that chat and user only. There is no global latest-artifact fallback on chat queries."
+    ],
+    "ground_truth": "Limit retrieval to the current chat’s uploaded artifacts only."
+  },
+  {
+    "question": "What guardrails run on queries and answers?",
+    "answer": "InputGuard checks length and injection patterns. OutputGuard checks grounding overlap, PII, and confidence.",
+    "contexts": [
+      "InputGuard validates queries (2–2000 chars, injection/SQL/harmful patterns). OutputGuard validates answers for PII masking, token-overlap grounding, hallucination heuristics, and confidence."
+    ],
+    "ground_truth": "Input injection/length checks and output grounding/PII/confidence checks."
+  },
+  {
+    "question": "Which LLM options can generate answers?",
+    "answer": "Local Ollama models when USE_LOCAL_LLM is true, otherwise Groq cloud generation models such as llama-3.3-70b-versatile.",
+    "contexts": [
+      "QueryPipeline selects OllamaModel when USE_LOCAL_LLM=true, else GroqModel with GROQ_GENERATION_MODEL (default llama-3.3-70b-versatile). Streaming uses native .stream()."
+    ],
+    "ground_truth": "Ollama locally or Groq in the cloud depending on USE_LOCAL_LLM."
+  },
+  {
+    "question": "What is Reciprocal Rank Fusion used for?",
+    "answer": "RRF merges ranked lists from BM25 and dense search without requiring calibrated raw scores across models.",
+    "contexts": [
+      "HybridRetriever fuses BM25 and dense rankings with RRF (default weights about 0.4 BM25 / 0.6 dense, RRF_K=60) before cross-encoder reranking."
+    ],
+    "ground_truth": "To fuse BM25 and dense rankings into one candidate list."
+  },
+  {
+    "question": "How are images indexed?",
+    "answer": "Groq vision produces a caption, SigLIP embeds the pixels, and BGE-M3 embeds the caption text so both visual and lexical queries work.",
+    "contexts": [
+      "Image pipeline: VisionLLM.describe_image builds type/topic/description/OCR text. SigLIP embed_image stores vision vectors; BGE-M3 embed_text stores caption vectors; Metadata key vision_caption is saved."
+    ],
+    "ground_truth": "Dual embed: SigLIP on pixels and BGE-M3 on the caption."
+  },
+  {
+    "question": "What happens when Groq vision rate-limits during video ingest?",
+    "answer": "If ASR exists, ingestion can degrade to ASR-only; otherwise the job is treated as retryable rate-limit failure.",
+    "contexts": [
+      "VideoService catches vision 429 errors. When ASR segments exist it logs degradation to ASR-only. Without ASR it raises a retryable rate-limit error for Celery backoff."
+    ],
+    "ground_truth": "Degrade to ASR-only if speech exists; otherwise retry."
+  },
+  {
+    "question": "Why is MAX_INGEST_CHUNKS capped?",
+    "answer": "A default cap of 200 chunks bounds embedding cost and storage for large PDFs and long videos.",
+    "contexts": [
+      "IngestionPipeline caps document chunks and video segments with MAX_INGEST_CHUNKS (default 200) before embedding."
+    ],
+    "ground_truth": "To bound embed and storage cost per artifact."
+  },
+  {
+    "question": "What is the role of Celery in Aegis?",
+    "answer": "Celery runs multimodal ingestion asynchronously with retries so the upload API returns immediately.",
+    "contexts": [
+      "POST /upload creates Artifact and IngestionJob then process_ingestion_task.delay. Celery worker stages PARSING through STORING with Retryable vs NonRetryable errors and BM25 rebuild on success."
+    ],
+    "ground_truth": "Background ingestion with retries after upload."
+  },
+  {
+    "question": "How does streaming generation differ from blocking /query?",
+    "answer": "Streaming uses a plain-text prompt and native LLM token stream. Blocking /query prefers structured StructuredAnswer JSON when supported.",
+    "contexts": [
+      "Generator.stream_generate builds a plain-text prompt and yields llm.stream tokens. generate()/generate_structured returns StructuredAnswer for the LangGraph blocking path."
+    ],
+    "ground_truth": "Stream path yields plain tokens; blocking path uses structured answers."
+  },
+  {
+    "question": "What metadata enables temporal video search?",
+    "answer": "artifact_metadata rows with key temporal store start_time, end_time, and content for overlap queries.",
+    "contexts": [
+      "After video segment embedding, Metadata(key='temporal', value={start_time, end_time, content, has_asr, has_visual}) is written. PgVectorStore.query_time_range filters on those fields."
+    ],
+    "ground_truth": "temporal metadata with start_time and end_time."
+  },
+  {
+    "question": "Why use unbounded pgvector dimensions?",
+    "answer": "BGE-M3 vectors are 1024-d and SigLIP vectors are 768-d, so one unbounded Vector column holds both with an embedding_type discriminator.",
+    "contexts": [
+      "Migration removed fixed vector(1024). VectorEmbedding.embedding is Vector() unbounded. Searches choose BGE or SigLIP query encoding based on embedding_type."
+    ],
+    "ground_truth": "To store both 1024-d text and 768-d vision embeddings in one table."
+  },
+  {
+    "question": "What does OutputGuard grounding check approximate?",
+    "answer": "It measures token overlap between the answer and retrieved context as a grounding proxy and contributes to confidence.",
+    "contexts": [
+      "OutputGuard.validate computes grounding using roughly 60% token overlap heuristics, flags potential hallucination, masks PII, and returns confidence."
+    ],
+    "ground_truth": "Token overlap between answer and context as a grounding signal."
+  },
+  {
+    "question": "Which vision model captions frames in production?",
+    "answer": "Groq-hosted multimodal models such as qwen/qwen3.6-27b via GroqVisionService, not local LLaVA.",
+    "contexts": [
+      "Production ingest uses GroqVisionService with GROQ_VISION_MODEL (default qwen/qwen3.6-27b). Local LLaVA vision_service remains for offline experiments only."
+    ],
+    "ground_truth": "Groq vision (Qwen multimodal), not local LLaVA."
+  },
+  {
+    "question": "How is BM25 kept in sync after ingest?",
+    "answer": "After a successful Celery ingestion job, BM25Store is rebuilt from Postgres text embeddings.",
+    "contexts": [
+      "process_ingestion_task on success rebuilds BM25 from vector_embeddings where embedding_type is text and persists storage/bm25_index.json."
+    ],
+    "ground_truth": "Rebuild the BM25 index from Postgres text vectors on success."
+  },
+  {
+    "question": "What authentication does the chat UI require?",
+    "answer": "Email and password signup/login issuing a JWT Bearer token stored by the frontend.",
+    "contexts": [
+      "Auth API: POST /auth/signup and /auth/login return access_token. Protected routes use HTTPBearer get_current_user. Frontend stores JWT in localStorage."
+    ],
+    "ground_truth": "Email/password with JWT bearer tokens."
+  },
+  {
+    "question": "Can one user see another user’s uploaded PDFs in retrieval?",
+    "answer": "No. Artifacts are bound to user_id and session_id; queries only search completed embeddings for the authenticated user’s current chat.",
+    "contexts": [
+      "Upload sets Artifact.user_id and session_id. resolve_session_artifact_ids filters by both. Job status and chat APIs enforce ownership."
+    ],
+    "ground_truth": "No — retrieval is scoped to the owner’s current chat artifacts."
+  },
+  {
+    "question": "What RAGAS metrics does Aegis report?",
+    "answer": "Faithfulness, answer relevancy, context precision, and context recall when ground truth is provided, plus a weighted composite score.",
+    "contexts": [
+      "AegisEvaluator runs RAGAS Faithfulness, AnswerRelevancy, ContextPrecision, and ContextRecall via Groq. Composite weights faithfulness 0.35, relevancy 0.30, precision 0.20, recall 0.15."
+    ],
+    "ground_truth": "Faithfulness, answer relevancy, context precision/recall, and composite score."
+  },
+  {
+    "question": "Why prefer hybrid search over dense-only retrieval?",
+    "answer": "BM25 catches rare exact tokens and IDs while dense search catches paraphrases; fusion plus rerank improves precision.",
+    "contexts": [
+      "Dense search misses rare identifiers; BM25 misses paraphrase. Aegis runs both, fuses with RRF, then cross-encoder reranks to the final top-k for the LLM context."
+    ],
+    "ground_truth": "Sparse and dense signals complement each other before reranking."
+  }
+]

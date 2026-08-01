@@ -45,3 +45,7 @@ langchain_core
 ollama
 langchain_ollama
 llama-index-core
+passlib[bcrypt]
+bcrypt<4.1
+python-jose[cryptography]
+email-validator

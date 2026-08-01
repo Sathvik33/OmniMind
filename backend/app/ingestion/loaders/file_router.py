@@ -12,6 +12,7 @@ class FileRouter:
     def __init__(self):
         self.loaders = {
             ".txt": TextLoader(),
+            ".md": TextLoader(),
             ".pdf": PDFLoader(),
             ".docx": DocxLoader(),
             ".pptx": PPTLoader(),
