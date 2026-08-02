@@ -31,7 +31,7 @@ from backend.app.core.config import (
 
 logger = logging.getLogger(__name__)
 
-_MAX_VISION_WORKERS = 2
+_MAX_VISION_WORKERS = 1  # serialize captions — avoids Groq TPM bursts on video keyframes
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 # Merge short Whisper segments into ~30s windows for RAG chunk quality
 _ASR_WINDOW_SEC = 30
@@ -266,8 +266,15 @@ class VideoService:
         results: List[Tuple[int, str, Optional[str]]] = []
         rate_limited = False
 
+        # ContextVars do not always propagate into ThreadPool workers — capture parent.
+        from backend.app.monitoring.langsmith_logger import tracer
+
+        parent_run_id = tracer.current_parent()
+
         def describe_one(item: Tuple[int, str]) -> Tuple[int, str, Optional[str]]:
             nonlocal rate_limited
+            if parent_run_id:
+                tracer.bind_parent(parent_run_id)
             ts, path = item
             try:
                 caption = self.vision_service.describe(path)

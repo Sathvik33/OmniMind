@@ -68,9 +68,23 @@ LangSmith (`AegisTracer`) attaches to:
 
 1. **Ingest** — `aegis_ingest`, `document_chunking`
 2. **Retrieve** — `bm25_retrieve`, `dense_retrieve`, `hybrid_retrieval` (RRF)
-3. **Rerank** — `cross_encoder_rerank`
-4. **Generate** — LLM generation / stream spans
-5. **Parent query run** — correlates the graph
+3. **Every model I/O** — tagged spans via `tracer.model_call(...)`:
+
+| Tag | Call site |
+|-----|-----------|
+| `qwen-llm` / `ollama` | Local answer generation / stream |
+| `groq-llm` | Groq answer generation / stream |
+| `openrouter-llm` | OpenRouter free answer fallback |
+| `vision-llm` + `groq-vision` / `openrouter-vision` | Frame / image captions |
+| `bge-m3` | Text embeddings |
+| `siglip` | Vision embeddings + cross-modal query |
+| `reranker` / `bge-reranker` | Cross-encoder rerank |
+| `asr` / `groq-asr` | Whisper transcription |
+
+Each span records **provider**, **model**, **input preview**, **output preview**, and **latency_ms**.
+
+4. **Generate** — LLM generation / stream spans (also nested under query parent)
+5. **Parent query / ingest run** — correlates the graph
 
 `/monitor/*` exposes runtime aggregates when tracing is enabled.
 

@@ -54,18 +54,42 @@ class CrossEncoderReranker:
         if not candidates:
             return []
 
-        # Score all (query, document) pairs
-        pairs = [(query, doc) for doc in candidates]
-        scores = self._score_pairs(pairs)
+        from backend.app.monitoring.langsmith_logger import tracer
 
-        # Combine and sort by score
-        ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
+        with tracer.model_call(
+            name=f"reranker:{_MODEL_NAME}",
+            tags=["reranker", "cross-encoder", "bge-reranker"],
+            provider="sentence-transformers",
+            model=_MODEL_NAME,
+            inputs={
+                "query": (query or "")[:1000],
+                "candidate_count": len(candidates),
+                "threshold": threshold,
+            },
+            run_type="chain",
+        ) as span:
+            pairs = [(query, doc) for doc in candidates]
+            scores = self._score_pairs(pairs)
 
-        # Apply threshold and limit to top_k
-        filtered = [(doc, score) for score, doc in ranked if score >= threshold]
-        results = filtered[: self.top_k]
+            ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
 
-        return results if return_scores else [doc for doc, _ in results]
+            filtered = [(doc, score) for score, doc in ranked if score >= threshold]
+            results = filtered[: self.top_k]
+
+            span["outputs"] = {
+                "output_count": len(results),
+                "top_scores": (
+                    [round(float(s), 4) for _, s in results[:8]]
+                    if return_scores
+                    else [round(float(s), 4) for s, _ in ranked[:8]]
+                ),
+            }
+            span["output"] = (
+                f"reranked {len(candidates)} → {len(results)} "
+                f"(device={self.device})"
+            )
+
+            return results if return_scores else [doc for doc, _ in results]
 
     def rerank_with_metadata(
         self,

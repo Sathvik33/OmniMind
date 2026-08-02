@@ -141,7 +141,26 @@ class GroqASRService:
 
         try:
             result = call_with_retry(_call, label="groq-asr", max_attempts=2)
-            return self._segments_from_groq_result(result, time_offset)
+            from backend.app.monitoring.langsmith_logger import tracer
+
+            segs = self._segments_from_groq_result(result, time_offset)
+            tracer.log_model_io(
+                name=f"asr:groq:{self.model}",
+                tags=["asr", "groq-asr", "whisper", "groq"],
+                provider="groq",
+                model=self.model,
+                inputs={
+                    "audio_path": audio_path,
+                    "audio_bytes": len(payload),
+                    "time_offset": time_offset,
+                },
+                outputs={
+                    "segment_count": len(segs),
+                    "preview": (segs[0]["text"][:200] if segs else ""),
+                },
+                run_type="llm",
+            )
+            return segs
         except Exception as e:
             # OpenRouter ASR only if a free STT model id is configured (catalog has none by default)
             if (
@@ -156,7 +175,24 @@ class GroqASRService:
                         filename=Path(audio_path).name,
                         audio_bytes=payload,
                     )
-                    return self._segments_from_openrouter_result(data, time_offset)
+                    segs = self._segments_from_openrouter_result(data, time_offset)
+                    tracer.log_model_io(
+                        name=f"asr:openrouter:{OPENROUTER_WHISPER_MODEL}",
+                        tags=["asr", "openrouter-asr", "whisper", "openrouter"],
+                        provider="openrouter",
+                        model=OPENROUTER_WHISPER_MODEL,
+                        inputs={
+                            "audio_path": audio_path,
+                            "audio_bytes": len(payload),
+                            "time_offset": time_offset,
+                        },
+                        outputs={
+                            "segment_count": len(segs),
+                            "preview": (segs[0]["text"][:200] if segs else ""),
+                        },
+                        run_type="llm",
+                    )
+                    return segs
                 except Exception as or_err:
                     logger.error("OpenRouter ASR fallback failed: %s", or_err)
             if is_rate_limit_error(e):

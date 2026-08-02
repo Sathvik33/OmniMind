@@ -24,7 +24,14 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
+import contextvars
+
 logger = logging.getLogger(__name__)
+
+# Nest model spans under the active query / ingest run when present
+_parent_run_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "aegis_langsmith_parent", default=None
+)
 
 # ── Optional LangSmith import (graceful fallback) ─────────────────────────────
 try:
@@ -148,6 +155,10 @@ class AegisTracer:
             except Exception as e:
                 logger.warning(f"LangSmith start_run failed: {e}")
 
+        try:
+            _parent_run_id.set(run_id)
+        except Exception:
+            pass
         return run_id
 
     def end_run(
@@ -177,6 +188,8 @@ class AegisTracer:
                 outputs=outputs,
                 error=error,
             )
+        if _parent_run_id.get() == run_id:
+            _parent_run_id.set(None)
 
     # ── Public: Ingest lifecycle ──────────────────────────────────────────────
 
@@ -213,6 +226,10 @@ class AegisTracer:
                 )
             except Exception as e:
                 logger.warning("LangSmith start_ingest_run failed: %s", e)
+        try:
+            _parent_run_id.set(run_id)
+        except Exception:
+            pass
         return run_id
 
     def end_ingest_run(
@@ -236,6 +253,8 @@ class AegisTracer:
                 },
                 error=error,
             )
+        if _parent_run_id.get() == run_id:
+            _parent_run_id.set(None)
 
     def log_chunking(
         self,
@@ -606,6 +625,155 @@ class AegisTracer:
             "max_latency_ms": round(max(latencies), 2) if latencies else None,
             "langsmith_url": f"https://smith.langchain.com/o/public/projects/p/{_PROJECT}",
         }
+
+    # ── Public: Per-model I/O spans (LLM / vision / embed / rerank / ASR) ──────
+
+    def bind_parent(self, run_id: Optional[str]) -> None:
+        """Explicitly nest following model_call spans under this parent run."""
+        _parent_run_id.set(run_id)
+
+    def current_parent(self) -> Optional[str]:
+        """Active query/ingest parent run id (if any)."""
+        return _parent_run_id.get()
+
+    @contextmanager
+    def model_call(
+        self,
+        *,
+        name: str,
+        tags: List[str],
+        provider: str,
+        model: str,
+        inputs: Optional[Dict[str, Any]] = None,
+        run_type: str = "llm",
+        parent_run_id: Optional[str] = None,
+    ):
+        """
+        Trace one model invocation with full in/out payloads.
+
+        Usage:
+            with tracer.model_call(
+                name="llm:qwen2.5:7b",
+                tags=["llm", "qwen-llm", "ollama"],
+                provider="ollama",
+                model="qwen2.5:7b",
+                inputs={"prompt": prompt[:4000]},
+            ) as span:
+                text = backend.generate(prompt)
+                span["output"] = text
+        """
+        parent = parent_run_id or _parent_run_id.get()
+        child_id = str(uuid.uuid4())
+        t0 = time.perf_counter()
+        started = _utc_now()
+        bag: Dict[str, Any] = {
+            "output": None,
+            "outputs": {},
+            "error": None,
+            "extra": {},
+        }
+        in_payload = {
+            "provider": provider,
+            "model": model,
+            **(inputs or {}),
+        }
+
+        if self._client:
+            try:
+                kwargs = dict(
+                    name=name,
+                    run_type=run_type,
+                    project_name=_PROJECT,
+                    id=child_id,
+                    inputs=in_payload,
+                    tags=list(dict.fromkeys(["aegis", "model-io", *tags])),
+                    start_time=started,
+                )
+                if parent:
+                    kwargs["parent_run_id"] = parent
+                self._client.create_run(**kwargs)
+            except Exception as e:
+                logger.debug("LangSmith model_call start failed (%s): %s", name, e)
+
+        try:
+            yield bag
+        except Exception as e:
+            bag["error"] = str(e)
+            raise
+        finally:
+            latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+            out: Dict[str, Any] = {
+                "provider": provider,
+                "model": model,
+                "latency_ms": latency_ms,
+                **(bag.get("outputs") or {}),
+                **(bag.get("extra") or {}),
+            }
+            raw = bag.get("output")
+            if raw is not None:
+                text = raw if isinstance(raw, str) else str(raw)
+                out["output_preview"] = _preview(text, 1200)
+                out["output_length"] = len(text)
+                if len(text) <= 8000:
+                    out["output"] = text
+                else:
+                    out["output"] = text[:8000] + "…[truncated]"
+
+            if parent:
+                self._append_step(
+                    parent,
+                    {
+                        "step": "model_call",
+                        "name": name,
+                        "provider": provider,
+                        "model": model,
+                        "latency_ms": latency_ms,
+                        "error": bag.get("error"),
+                        "tags": tags,
+                    },
+                )
+
+            if self._client:
+                try:
+                    self._client.update_run(
+                        run_id=child_id,
+                        outputs=out,
+                        error=bag.get("error"),
+                        end_time=_utc_now(),
+                    )
+                except Exception as e:
+                    logger.debug("LangSmith model_call end failed (%s): %s", name, e)
+
+    def log_model_io(
+        self,
+        *,
+        name: str,
+        tags: List[str],
+        provider: str,
+        model: str,
+        inputs: Optional[Dict[str, Any]] = None,
+        outputs: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+        latency_ms: Optional[float] = None,
+        run_type: str = "llm",
+        parent_run_id: Optional[str] = None,
+    ) -> None:
+        """One-shot model I/O span (non-context-manager)."""
+        with self.model_call(
+            name=name,
+            tags=tags,
+            provider=provider,
+            model=model,
+            inputs=inputs,
+            run_type=run_type,
+            parent_run_id=parent_run_id,
+        ) as span:
+            if outputs:
+                span["outputs"] = outputs
+            if error:
+                span["error"] = error
+            if latency_ms is not None:
+                span["extra"] = {"reported_latency_ms": latency_ms}
 
     # ── Private helpers ───────────────────────────────────────────────────────
 

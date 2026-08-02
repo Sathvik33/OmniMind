@@ -1,14 +1,5 @@
 """
 GroqModel — Groq cloud LLM wrapper for AEGIS v3.0.
-
-Replaces local Ollama (qwen2.5:7b) with Groq-hosted llama3-70b-8192.
-
-Why Groq?
-  - 10-100x faster than local Ollama on consumer hardware
-  - No GPU/VRAM required for the LLM
-  - llama3-70b-8192 is significantly more capable than qwen2.5:7b
-
-Interface is identical to OllamaModel so QueryPipeline requires zero changes.
 """
 
 import os
@@ -25,6 +16,9 @@ class GroqModel:
     Drop-in replacement for OllamaModel — same .generate() / .stream() interface.
     """
 
+    provider = "groq"
+    kind_tags = ["llm", "groq-llm", "groq", "cloud"]
+
     def __init__(
         self,
         model_name: str = GROQ_GENERATION_MODEL,
@@ -37,7 +31,6 @@ class GroqModel:
                 "GROQ_LLM_API_KEY is not set. Add it to your .env file."
             )
 
-
         self.llm = ChatGroq(
             api_key=api_key,
             model_name=model_name,
@@ -48,12 +41,36 @@ class GroqModel:
         self.model_name = model_name
 
     def generate(self, prompt: str) -> str:
-        """Blocking generation — returns full response string."""
-        response = self.llm.invoke(prompt)
-        return response.content
+        from backend.app.monitoring.langsmith_logger import tracer
+
+        with tracer.model_call(
+            name=f"llm:groq:{self.model_name}",
+            tags=self.kind_tags,
+            provider=self.provider,
+            model=self.model_name,
+            inputs={"prompt": (prompt or "")[:6000], "prompt_chars": len(prompt or "")},
+            run_type="llm",
+        ) as span:
+            response = self.llm.invoke(prompt)
+            text = response.content
+            span["output"] = text
+            return text
 
     def stream(self, prompt: str):
-        """Token-by-token streaming generator."""
-        for chunk in self.llm.stream(prompt):
-            if chunk.content:
-                yield chunk.content
+        from backend.app.monitoring.langsmith_logger import tracer
+
+        with tracer.model_call(
+            name=f"llm:groq:{self.model_name}:stream",
+            tags=[*self.kind_tags, "stream"],
+            provider=self.provider,
+            model=self.model_name,
+            inputs={"prompt": (prompt or "")[:6000], "prompt_chars": len(prompt or ""), "mode": "stream"},
+            run_type="llm",
+        ) as span:
+            parts: list[str] = []
+            for chunk in self.llm.stream(prompt):
+                if chunk.content:
+                    parts.append(chunk.content)
+                    yield chunk.content
+            span["output"] = "".join(parts)
+            span["extra"] = {"token_chunks": len(parts)}

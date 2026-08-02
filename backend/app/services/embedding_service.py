@@ -73,57 +73,94 @@ class EmbeddingService:
         Generate embedding for text using the registered text model.
         Checks Redis cache first.
         """
+        from backend.app.monitoring.langsmith_logger import tracer
+
         model_name = self.text_model.name if self.text_model else "BAAI/bge-m3"
         cache_key = self._get_cache_key(text, model_name)
-        
-        if redis_client:
-            try:
-                cached = redis_client.get(cache_key)
-                if cached:
-                    return json.loads(cached)
-            except Exception:
-                pass
 
-        # Actual model inference using sentence_transformers (BGE-M3)
-        embedding = self.bge_model.encode(text, convert_to_numpy=True).tolist()
-        
-        if redis_client:
-            try:
-                # Cache for 24 hours
-                redis_client.setex(cache_key, 86400, json.dumps(embedding))
-            except Exception:
-                pass
-        return embedding
+        with tracer.model_call(
+            name=f"embedding:bge-m3",
+            tags=["embedding", "bge-m3", "text-embedding", "local"],
+            provider="sentence-transformers",
+            model=model_name,
+            inputs={"text_preview": (text or "")[:500], "text_chars": len(text or "")},
+            run_type="embedding",
+        ) as span:
+            if redis_client:
+                try:
+                    cached = redis_client.get(cache_key)
+                    if cached:
+                        emb = json.loads(cached)
+                        span["outputs"] = {"dims": len(emb), "cache_hit": True}
+                        span["output"] = f"cached embedding dims={len(emb)}"
+                        return emb
+                except Exception:
+                    pass
+
+            embedding = self.bge_model.encode(text, convert_to_numpy=True).tolist()
+
+            if redis_client:
+                try:
+                    redis_client.setex(cache_key, 86400, json.dumps(embedding))
+                except Exception:
+                    pass
+            span["outputs"] = {"dims": len(embedding), "cache_hit": False}
+            span["output"] = f"embedding dims={len(embedding)}"
+            return embedding
 
 
     def embed_image(self, image_path: str) -> List[float]:
         """
         Generate embedding for an image using the registered vision model.
         """
-        model_name = self.vision_model.name if self.vision_model else "SigLIP2"
-        # Actual model inference using open_clip (SigLIP)
-        image = Image.open(image_path).convert('RGB')
-        image_input = self.siglip_preprocess(image).unsqueeze(0).to(self.device)
-        autocast_ctx = torch.amp.autocast('cuda') if self.device == "cuda" else torch.no_grad()
-        with torch.no_grad(), autocast_ctx:
+        from backend.app.monitoring.langsmith_logger import tracer
 
-            image_features = self.siglip_model.encode_image(image_input)
-            image_features /= image_features.norm(dim=-1, keepdim=True)
-        
-        embedding = image_features[0].cpu().numpy().tolist()
-        return embedding
+        model_name = self.vision_model.name if self.vision_model else "ViT-B-16-SigLIP"
+        with tracer.model_call(
+            name="embedding:siglip:image",
+            tags=["embedding", "siglip", "vision-embedding", "local"],
+            provider="open-clip",
+            model=model_name,
+            inputs={"image_path": image_path},
+            run_type="embedding",
+        ) as span:
+            image = Image.open(image_path).convert('RGB')
+            image_input = self.siglip_preprocess(image).unsqueeze(0).to(self.device)
+            autocast_ctx = torch.amp.autocast('cuda') if self.device == "cuda" else torch.no_grad()
+            with torch.no_grad(), autocast_ctx:
+
+                image_features = self.siglip_model.encode_image(image_input)
+                image_features /= image_features.norm(dim=-1, keepdim=True)
+
+            embedding = image_features[0].cpu().numpy().tolist()
+            span["outputs"] = {"dims": len(embedding)}
+            span["output"] = f"siglip image embedding dims={len(embedding)}"
+            return embedding
 
     def embed_query_for_vision(self, text: str) -> List[float]:
         """
         Generate embedding for a text query using the vision model's text encoder
         for cross-modal search (Text -> Image).
         """
-        text_input = self.siglip_tokenizer([text]).to(self.device)
-        with torch.no_grad(), torch.cuda.amp.autocast():
-            text_features = self.siglip_model.encode_text(text_input)
-            text_features /= text_features.norm(dim=-1, keepdim=True)
-            
-        embedding = text_features[0].cpu().numpy().tolist()
-        return embedding
+        from backend.app.monitoring.langsmith_logger import tracer
+
+        with tracer.model_call(
+            name="embedding:siglip:query",
+            tags=["embedding", "siglip", "cross-modal-query", "local"],
+            provider="open-clip",
+            model="ViT-B-16-SigLIP",
+            inputs={"text_preview": (text or "")[:500], "text_chars": len(text or "")},
+            run_type="embedding",
+        ) as span:
+            text_input = self.siglip_tokenizer([text]).to(self.device)
+            ctx = torch.amp.autocast("cuda") if self.device == "cuda" else torch.no_grad()
+            with torch.no_grad(), ctx:
+                text_features = self.siglip_model.encode_text(text_input)
+                text_features /= text_features.norm(dim=-1, keepdim=True)
+
+            embedding = text_features[0].cpu().numpy().tolist()
+            span["outputs"] = {"dims": len(embedding)}
+            span["output"] = f"siglip query embedding dims={len(embedding)}"
+            return embedding
 
 embedding_service = EmbeddingService()

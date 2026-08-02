@@ -89,8 +89,11 @@ class FailoverLLM:
         last: Optional[BaseException] = None
         for i, backend in enumerate(self._chain):
             name = getattr(backend, "model_name", type(backend).__name__)
+            tags = getattr(backend, "kind_tags", ["llm"])
             try:
-                return backend.generate(prompt)
+                text = backend.generate(prompt)
+                logger.info("FailoverLLM generate used backend=%s tags=%s", name, tags)
+                return text
             except Exception as e:
                 last = e
                 if i + 1 < len(self._chain) and should_use_fallback(e):
@@ -99,7 +102,6 @@ class FailoverLLM:
                     )
                     continue
                 if i + 1 < len(self._chain):
-                    # Non-fallbackable but still try remaining cloud only if local failed hard
                     logger.warning(
                         "%s generate failed (%s); trying next backend anyway", name, e
                     )
@@ -112,12 +114,14 @@ class FailoverLLM:
         last: Optional[BaseException] = None
         for i, backend in enumerate(self._chain):
             name = getattr(backend, "model_name", type(backend).__name__)
+            tags = getattr(backend, "kind_tags", ["llm"])
             try:
                 yielded = False
                 for token in backend.stream(prompt):
                     yielded = True
                     yield token
                 if yielded:
+                    logger.info("FailoverLLM stream used backend=%s tags=%s", name, tags)
                     return
                 raise RuntimeError(f"{name} stream returned no tokens")
             except Exception as e:
