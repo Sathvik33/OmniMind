@@ -175,6 +175,31 @@ export async function getJobStatus(jobId: number): Promise<JobStatus> {
   return res.json();
 }
 
+/** Parse text/event-stream frames; also tolerates legacy plain-text streams. */
+function parseSseChunk(raw: string, carry: string): { events: string[]; carry: string } {
+  const buf = carry + raw;
+  const parts = buf.split("\n\n");
+  const incomplete = parts.pop() ?? "";
+  const events: string[] = [];
+  for (const block of parts) {
+    const dataLines: string[] = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).replace(/^ /, ""));
+      }
+    }
+    if (dataLines.length) {
+      const payload = dataLines.join("\n");
+      if (payload === "[DONE]") continue;
+      events.push(payload);
+    } else if (block.trim()) {
+      // Legacy plain-text chunk (no SSE framing)
+      events.push(block);
+    }
+  }
+  return { events, carry: incomplete };
+}
+
 export async function streamQuery(
   query: string,
   sessionId: number,
@@ -194,13 +219,38 @@ export async function streamQuery(
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let full = "";
+    let carry = "";
+    const ctype = (res.headers.get("content-type") || "").toLowerCase();
+    const isSse = ctype.includes("text/event-stream");
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = decoder.decode(value, { stream: true });
-      full += chunk;
-      onToken(chunk);
+      if (isSse || chunk.includes("data:")) {
+        const parsed = parseSseChunk(chunk, carry);
+        carry = parsed.carry;
+        for (const ev of parsed.events) {
+          full += ev;
+          onToken(ev);
+        }
+      } else {
+        full += chunk;
+        onToken(chunk);
+      }
+    }
+    if (carry) {
+      // Flush trailing plain fragment without a final blank line
+      if (carry.startsWith("data:")) {
+        const parsed = parseSseChunk(carry + "\n\n", "");
+        for (const ev of parsed.events) {
+          full += ev;
+          onToken(ev);
+        }
+      } else if (!isSse) {
+        full += carry;
+        onToken(carry);
+      }
     }
 
     // Ngrok / proxy often drop slow local-LLM streams after headers only

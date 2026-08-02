@@ -24,7 +24,20 @@ load_dotenv()
 from PIL import Image
 from groq import Groq
 
-from backend.app.core.config import GROQ_VISION_API_KEY, GROQ_VISION_MODEL
+from backend.app.core.config import (
+    GROQ_VISION_API_KEY,
+    GROQ_VISION_MODEL,
+    OPENROUTER_VISION_MODEL,
+)
+from backend.app.services.groq_retry import (
+    call_with_retry,
+    is_rate_limit_error,
+    should_use_fallback,
+)
+from backend.app.services.openrouter_client import (
+    openrouter_vision_configured,
+    vision_chat_completion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,32 +79,65 @@ class GroqVisionService:
         """
         try:
             b64 = self._encode_image(image_path)
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{b64}"
+
+            def _call():
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{b64}"
+                                    },
                                 },
-                            },
+                                {
+                                    "type": "text",
+                                    "text": _DESCRIBE_PROMPT,
+                                },
+                            ],
+                        }
+                    ],
+                    max_tokens=220,
+                    temperature=0.1,
+                )
+                return response.choices[0].message.content.strip()
+
+            try:
+                return call_with_retry(_call, label="groq-vision", max_attempts=2)
+            except Exception as groq_err:
+                if openrouter_vision_configured() and should_use_fallback(groq_err):
+                    logger.warning(
+                        "Groq vision failed (%s); falling back to OpenRouter free VL",
+                        groq_err,
+                    )
+                    return vision_chat_completion(
+                        model=OPENROUTER_VISION_MODEL,
+                        messages=[
                             {
-                                "type": "text",
-                                "text": _DESCRIBE_PROMPT,
-                            },
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": _DESCRIBE_PROMPT},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/jpeg;base64,{b64}"
+                                        },
+                                    },
+                                ],
+                            }
                         ],
-                    }
-                ],
-                max_tokens=220,
-                temperature=0.1,
-            )
-            return response.choices[0].message.content.strip()
+                        temperature=0.1,
+                        max_tokens=220,
+                    )
+                raise
 
         except Exception as e:
             logger.error(f"GroqVisionService.describe failed for {image_path}: {e}")
+            if is_rate_limit_error(e):
+                return f"[Vision processing failed: 429 rate limit: {e}]"
             return f"[Vision processing failed: {e}]"
 
     def _encode_image(self, image_path: str) -> str:

@@ -3,6 +3,7 @@
 | Doc | Audience | Contents |
 |-----|----------|----------|
 | [../readme.md](../readme.md) | Everyone | Product overview, architecture, quick start, API |
+| [architecture.md](./architecture.md) | Everyone | Combined system design + LLM/monitoring map |
 | [../backend/README.md](../backend/README.md) | Backend | Design principles, per-modality chunk/embed, module map |
 | [GUIDE.md](./GUIDE.md) | Operators / demos | Boot checklist, curl lab, temporal playground, failure matrix |
 | [vector_storage_migration_path.md](./vector_storage_migration_path.md) | Backend / infra | pgvector scaling phases |
@@ -24,8 +25,11 @@
 - UI: `http://localhost:5173`
 - MinIO console: `http://localhost:9001`
 
-### Architecture reference image
+### Architecture diagrams
 
-![Aegis architecture reference](./assets/aegis-architecture-reference.png)
+| Image | What it shows |
+|-------|----------------|
+| [**System architecture (full stack)**](./assets/aegis-system-architecture.png) | Frontend → FastAPI → Celery → stores → retrieval → LLM failover → LangSmith |
+| [Ingestion reference](./assets/aegis-architecture-reference.png) | Modality lanes → embedding service → storage |
 
-Ingestion lane implementation (text / image / video): [`../backend/app/ingestion/README.md`](../backend/app/ingestion/README.md)
+Narrative: [`architecture.md`](./architecture.md) · ingest lanes: [`../backend/app/ingestion/README.md`](../backend/app/ingestion/README.md)

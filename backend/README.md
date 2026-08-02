@@ -49,7 +49,7 @@ Migrate: `alembic -c backend/alembic.ini upgrade head`
 
 1. **Grounding first** — answers must come from uploaded artifacts; empty/weak context refuses or hedges.
 2. **Async ingest, sync-ish query** — uploads never block the API; queries block until embeddings exist for scoped artifacts.
-3. **Dual vector spaces** — lexical/semantic text (**BGE-M3, 1024-d**) and cross-modal vision (**SigLIP, 768-d**) share one pgvector table with unbounded `Vector()` dims.
+3. **Dual vector spaces** — lexical/semantic text (**BGE-M3, 1024-d** → `embedding_text`) and cross-modal vision (**SigLIP, 768-d** → `embedding_vision`) with per-column HNSW indexes; legacy `embedding` kept for dual-read.
 4. **Modality-specific chunking** — documents ≠ images ≠ video. Each path builds different “atomic units” before embedding.
 5. **Cloud for heavy multimodal I/O, local for embeds** — Groq Whisper/Vision for captions/ASR; SentenceTransformers/OpenCLIP for vectors (GPU if available).
 6. **Hybrid recall then precision** — BM25 ∪ dense → RRF → cross-encoder rerank.
@@ -58,11 +58,13 @@ Migrate: `alembic -c backend/alembic.ini upgrade head`
 
 ## System topology
 
+Full PNG: [`../docs/assets/aegis-system-architecture.png`](../docs/assets/aegis-system-architecture.png) · [`../docs/architecture.md`](../docs/architecture.md)
+
 ```mermaid
 flowchart TB
   subgraph Edge
-    API[FastAPI]
     UI[React UI]
+    API[FastAPI]
   end
   subgraph Async
     Celery[Celery worker]
@@ -74,26 +76,39 @@ flowchart TB
     Redis[(Redis broker + emb cache)]
   end
   subgraph Query
-    QP[QueryPipeline]
+    QP[QueryPipeline + LangGraph]
     HY[HybridRetriever]
-    GEN[Generator.stream]
+    GEN[FailoverLLM stream]
+  end
+  subgraph LLM
+    Qwen[Ollama qwen2.5:7b]
+    Groq[Groq]
+    OR[OpenRouter free]
+  end
+  subgraph Obs
+    LS[LangSmith]
   end
 
-  UI --> API
+  UI -->|JWT upload / SSE| API
   API -->|POST /upload| MinIO
-  API -->|enqueue job| Celery
+  API -->|enqueue| Celery
+  Celery --> Redis
   Celery --> MinIO
-  Celery -->|chunks + vectors + temporal| PG
+  Celery -->|text 1024 + vision 768| PG
   Celery -->|rebuild| BM25
-  API -->|/query-stream| QP
+  API --> QP
   QP --> HY
   HY --> PG
   HY --> BM25
   QP --> GEN
-  GEN -->|tokens| API
+  GEN --> Qwen
+  Qwen -.-> Groq
+  Groq -.-> OR
+  GEN -->|SSE| API
   API --> UI
-  Redis -.-> Celery
-  Redis -.-> Celery
+  QP --> LS
+  Celery --> LS
+  GEN --> LS
 ```
 
 ---

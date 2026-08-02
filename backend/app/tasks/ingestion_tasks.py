@@ -5,9 +5,59 @@ from backend.app.worker import celery_app
 from backend.app.db.database import SessionLocal
 from backend.app.db.models import IngestionJob, ProcessingStatus
 from backend.app.core.exceptions import NonRetryableIngestionError, RetryableIngestionError
-from backend.app.pipelines.ingestion_pipeline import MultimodalIngestionPipeline
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_ingestion_failure(exc: BaseException, retries: int, max_retries: int) -> dict:
+    """
+    Classify ingestion exceptions for Celery (pure — safe for unit tests).
+
+    Returns keys: status, stage, retryable, should_retry, countdown
+    """
+    if isinstance(exc, NonRetryableIngestionError):
+        return {
+            "status": ProcessingStatus.FAILED,
+            "stage": exc.stage,
+            "retryable": False,
+            "should_retry": False,
+            "countdown": None,
+        }
+    if isinstance(exc, RetryableIngestionError):
+        if retries >= max_retries:
+            return {
+                "status": ProcessingStatus.DEAD_LETTER,
+                "stage": exc.stage,
+                "retryable": True,
+                "should_retry": False,
+                "countdown": None,
+            }
+        return {
+            "status": ProcessingStatus.RUNNING,
+            "stage": exc.stage,
+            "retryable": True,
+            "should_retry": True,
+            "countdown": 2 ** retries * 5,
+        }
+    exc_str = str(exc).lower()
+    is_transient = any(
+        kw in exc_str for kw in ["connection", "timeout", "unavailable", "503", "reset", "429"]
+    )
+    if is_transient and retries < max_retries:
+        return {
+            "status": ProcessingStatus.RUNNING,
+            "stage": "RUNNING",
+            "retryable": True,
+            "should_retry": True,
+            "countdown": 2 ** retries * 5,
+        }
+    return {
+        "status": ProcessingStatus.FAILED,
+        "stage": "RUNNING",
+        "retryable": False,
+        "should_retry": False,
+        "countdown": None,
+    }
 
 
 def _update_job_status(job_id: int, status: ProcessingStatus, stage: str = None, error: str = None, tb: str = None, retryable: bool = True):
@@ -57,6 +107,8 @@ def process_ingestion_task(self, job_id: int):
     artifact_id = job.artifact_id
     db.close()
 
+    from backend.app.pipelines.ingestion_pipeline import MultimodalIngestionPipeline
+
     pipeline = MultimodalIngestionPipeline()
 
     try:
@@ -78,41 +130,43 @@ def process_ingestion_task(self, job_id: int):
         except Exception as bm25_err:
             logger.warning(f"Could not auto-rebuild BM25 index: {bm25_err}")
 
-
-    except NonRetryableIngestionError as exc:
-        # Non-retryable error (e.g. malformed input, unsupported format) -> fail immediately
-        tb_str = traceback.format_exc()
-        logger.error(f"Non-retryable ingestion error at stage {exc.stage}: {exc}")
-        _update_job_status(job_id, ProcessingStatus.FAILED, stage=exc.stage, error=str(exc), tb=tb_str, retryable=False)
-
-    except RetryableIngestionError as exc:
+    except (NonRetryableIngestionError, RetryableIngestionError, Exception) as exc:
         tb_str = traceback.format_exc()
         current_retries = self.request.retries
-        stage_name = exc.stage
-
-        if current_retries >= self.max_retries:
-            logger.error(f"Job {job_id} exhausted max retries at stage {stage_name}. Dead-lettering: {exc}")
-            _update_job_status(job_id, ProcessingStatus.DEAD_LETTER, stage=stage_name, error=f"Max retries reached: {str(exc)}", tb=tb_str, retryable=True)
+        decision = resolve_ingestion_failure(exc, current_retries, self.max_retries)
+        stage_name = decision["stage"]
+        err_msg = str(exc)
+        if decision["status"] == ProcessingStatus.DEAD_LETTER:
+            err_msg = f"Max retries reached: {exc}"
+            logger.error(
+                "Job %s exhausted max retries at stage %s. Dead-lettering: %s",
+                job_id,
+                stage_name,
+                exc,
+            )
+        elif isinstance(exc, NonRetryableIngestionError):
+            logger.error("Non-retryable ingestion error at stage %s: %s", stage_name, exc)
+        elif decision["should_retry"]:
+            logger.warning(
+                "Retryable error at stage %s (retry %s/%s): %s",
+                stage_name,
+                current_retries + 1,
+                self.max_retries,
+                exc,
+            )
         else:
-            logger.warning(f"Retryable error at stage {stage_name} (retry {current_retries + 1}/{self.max_retries}): {exc}")
-            _update_job_status(job_id, ProcessingStatus.RUNNING, stage=stage_name, error=str(exc), tb=tb_str, retryable=True)
-            # Exponential backoff retry
-            raise self.retry(exc=exc, countdown=2 ** current_retries * 5)
+            logger.error("Non-retryable unexpected error for job %s: %s", job_id, exc)
 
-    except Exception as exc:
-        # Unexpected error — only retry if it looks transient (connection/timeout)
-        tb_str = traceback.format_exc()
-        current_retries = self.request.retries
-        exc_str = str(exc).lower()
-        is_transient = any(kw in exc_str for kw in ["connection", "timeout", "unavailable", "503", "reset"])
-
-        if is_transient and current_retries < self.max_retries:
-            logger.warning(f"Transient error (retry {current_retries + 1}/{self.max_retries}): {exc}")
-            _update_job_status(job_id, ProcessingStatus.RUNNING, stage="RUNNING", error=str(exc), tb=tb_str, retryable=True)
-            raise self.retry(exc=exc, countdown=2 ** current_retries * 5)
-        else:
-            logger.error(f"Non-retryable unexpected error for job {job_id}: {exc}")
-            _update_job_status(job_id, ProcessingStatus.FAILED, stage="RUNNING", error=str(exc), tb=tb_str, retryable=False)
+        _update_job_status(
+            job_id,
+            decision["status"],
+            stage=stage_name,
+            error=err_msg,
+            tb=tb_str,
+            retryable=decision["retryable"],
+        )
+        if decision["should_retry"]:
+            raise self.retry(exc=exc, countdown=decision["countdown"])
 
 
 @celery_app.task

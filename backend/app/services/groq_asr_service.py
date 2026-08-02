@@ -17,7 +17,17 @@ from typing import Dict, List, Optional
 
 from groq import Groq
 
-from backend.app.core.config import GROQ_ASR_API_KEY, GROQ_WHISPER_MODEL
+from backend.app.core.config import (
+    GROQ_ASR_API_KEY,
+    GROQ_WHISPER_MODEL,
+    OPENROUTER_WHISPER_MODEL,
+)
+from backend.app.services.groq_retry import (
+    call_with_retry,
+    is_rate_limit_error,
+    should_use_fallback,
+)
+from backend.app.services.openrouter_client import openrouter_configured, transcribe_audio
 
 logger = logging.getLogger(__name__)
 
@@ -119,13 +129,41 @@ class GroqASRService:
 
     def _transcribe_file(self, audio_path: str, time_offset: float = 0.0) -> List[Dict]:
         with open(audio_path, "rb") as f:
-            result = self.client.audio.transcriptions.create(
-                file=(Path(audio_path).name, f.read()),
+            payload = f.read()
+
+        def _call():
+            return self.client.audio.transcriptions.create(
+                file=(Path(audio_path).name, payload),
                 model=self.model,
                 response_format="verbose_json",
                 timestamp_granularities=["segment"],
             )
 
+        try:
+            result = call_with_retry(_call, label="groq-asr", max_attempts=2)
+            return self._segments_from_groq_result(result, time_offset)
+        except Exception as e:
+            # OpenRouter ASR only if a free STT model id is configured (catalog has none by default)
+            if (
+                OPENROUTER_WHISPER_MODEL
+                and openrouter_configured()
+                and should_use_fallback(e)
+            ):
+                logger.warning("Groq ASR failed (%s); falling back to OpenRouter STT", e)
+                try:
+                    data = transcribe_audio(
+                        model=OPENROUTER_WHISPER_MODEL,
+                        filename=Path(audio_path).name,
+                        audio_bytes=payload,
+                    )
+                    return self._segments_from_openrouter_result(data, time_offset)
+                except Exception as or_err:
+                    logger.error("OpenRouter ASR fallback failed: %s", or_err)
+            if is_rate_limit_error(e):
+                logger.error("ASR rate-limited after retries: %s", e)
+            raise
+
+    def _segments_from_groq_result(self, result, time_offset: float) -> List[Dict]:
         segments: List[Dict] = []
         raw_segments = getattr(result, "segments", None) or []
         if raw_segments:
@@ -149,12 +187,38 @@ class GroqASRService:
                 )
             return segments
 
-        # Fallback: whole transcript as one segment
         text = (getattr(result, "text", None) or str(result) or "").strip()
         if not text:
             return []
         duration = getattr(result, "duration", None)
         end = int(duration + time_offset) if duration else int(time_offset) + 1
+        return [{"start": int(time_offset), "end": max(int(time_offset) + 1, end), "text": text}]
+
+    def _segments_from_openrouter_result(
+        self, data: Dict, time_offset: float
+    ) -> List[Dict]:
+        segments: List[Dict] = []
+        raw_segments = data.get("segments") or []
+        if raw_segments:
+            for seg in raw_segments:
+                start = float(seg.get("start", 0))
+                end = float(seg.get("end", start))
+                text = (seg.get("text") or "").strip()
+                if not text:
+                    continue
+                segments.append(
+                    {
+                        "start": int(max(0, start + time_offset)),
+                        "end": int(max(start + time_offset, end + time_offset)),
+                        "text": text,
+                    }
+                )
+            return segments
+        text = (data.get("text") or "").strip()
+        if not text:
+            return []
+        duration = data.get("duration")
+        end = int(float(duration) + time_offset) if duration else int(time_offset) + 1
         return [{"start": int(time_offset), "end": max(int(time_offset) + 1, end), "text": text}]
 
     def _transcribe_chunked(self, audio_path: str) -> List[Dict]:

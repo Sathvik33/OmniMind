@@ -34,7 +34,9 @@
 | Area | Update |
 |------|--------|
 | **UI** | React + Vite workspace — warm paper aesthetic, uploads appear **inside the chat** as live status cards |
-| **Streaming** | Native LLM `.stream()` — tokens arrive as generated (not post-hoc paragraph chunks) |
+| **Streaming** | SSE `text/event-stream` on `/query-stream` — native LLM `.stream()` tokens |
+| **LLM chain** | Local **Qwen** → Groq → OpenRouter `:free` (`FailoverLLM`) |
+| **Observability** | LangSmith spans: chunk / BM25 / dense / RRF / rerank / generate |
 | **Video RAG** | Dense keyframes (default **8s / 20 frames**), ASR windows + **every vision caption indexed**, richer object captions |
 | **Temporal NL** | `at 10s`, `10th second`, `first minute`, `between 5 and 20 seconds`, `MM:SS` — point queries expand ±8s |
 | **Retrieval** | Hybrid **BM25 + dense (+ vision)** → RRF → cross-encoder rerank → guardrails |
@@ -50,8 +52,8 @@
 | Timestamp-aware video Q&A | — | ✓ |
 | Hybrid sparse + dense retrieval | — | ✓ |
 | Input / output guardrails + confidence trailers | — | ✓ |
-| Local Ollama *or* Groq cloud generation | — | ✓ |
-| True token streaming to the UI | Varies | ✓ |
+| Local Qwen first → Groq → OpenRouter `:free` | — | ✓ |
+| SSE token streaming + LangSmith spans | Varies | ✓ |
 
 </details>
 
@@ -59,47 +61,81 @@
 
 ## Architecture
 
+Full system diagram (PNG): [`docs/assets/aegis-system-architecture.png`](docs/assets/aegis-system-architecture.png) · narrative: [`docs/architecture.md`](docs/architecture.md)
+
 ```mermaid
-flowchart LR
-  U[React Workspace] -->|multipart / JSON| API[FastAPI]
-  API -->|queue| C[Celery Worker]
-  C --> MinIO[(MinIO)]
-  C --> PG[(Postgres + pgvector)]
-  C --> BM25[(BM25 index)]
-  U -->|POST /query-stream| API
-  API --> Q[Query Pipeline]
-  Q --> H[Hybrid Retriever]
-  H --> PG
-  H --> BM25
-  Q --> G[LLM stream<br/>Ollama / Groq]
-  G -->|text/plain tokens| U
+flowchart TB
+  subgraph Client
+    UI[React + Vite]
+  end
+  subgraph API
+    FA[FastAPI JWT + chats]
+    QP[QueryPipeline / LangGraph]
+    FG[FailoverLLM]
+  end
+  subgraph Async
+    CEL[Celery worker]
+    ING[IngestionPipeline]
+  end
+  subgraph Stores
+    PG[(Postgres + pgvector)]
+    R[(Redis broker + emb cache)]
+    M[(MinIO)]
+    B[(BM25 JSON)]
+  end
+  subgraph LLM
+    OLL[1 Ollama qwen2.5:7b]
+    GR[2 Groq LLaMA]
+    OR[3 OpenRouter free]
+  end
+  subgraph Obs
+    LS[LangSmith spans]
+  end
+
+  UI -->|upload / query-stream SSE| FA
+  FA -->|enqueue| CEL
+  CEL --> R
+  CEL --> ING
+  ING --> M
+  ING -->|text 1024 + vision 768| PG
+  ING --> B
+  FA --> QP
+  QP -->|artifact_ids scope| PG
+  QP --> B
+  QP --> FG
+  FG --> OLL
+  OLL -.->|fail| GR
+  GR -.->|fail| OR
+  FG -->|SSE tokens| UI
+  QP --> LS
+  ING --> LS
+  FG --> LS
 ```
 
 ### Request path (query)
 
 ```
-Query
+Query (+ JWT, session_id)
   → InputGuard
-  → resolve artifact_ids (scoped uploads)
+  → resolve artifact_ids (this chat only)
   → ensure embeddings ready
   → _detect_time()?
-        YES → pgvector temporal metadata overlap (±pad for point times)
+        YES → temporal metadata SQL overlap (±pad)
         NO  → BM25 ∪ dense text ∪ dense vision → RRF → rerank
   → ContextBuilder
-  → Generator.stream_generate()   ← native token stream
-  → OutputGuard trailers
-  → StreamingResponse (text/plain, no-buffer headers)
+  → FailoverLLM.stream  (Qwen → Groq → OpenRouter :free)
+  → OutputGuard (grounding / PII)
+  → SSE text/event-stream  (JSON /query fallback)
 ```
 
 ### Ingestion path (all modalities)
 
 ```
-POST /upload → MinIO → Artifact + IngestionJob → Celery
-  Documents → loaders → chunk → embed → pgvector + BM25
-  Images    → Groq vision caption → embed
-  Videos    → Whisper ASR + OpenCV keyframes + vision captions
-            → timed segments (ASR windows + per-keyframe visual rows)
-            → temporal metadata + embeddings
+POST /upload → MinIO → Artifact + IngestionJob → Celery (Redis)
+  Documents → LiteParse → hierarchical chunk → BGE-M3 → pgvector + BM25
+  Images    → Groq vision (→ OpenRouter VL :free) → SigLIP + BGE-M3
+  Videos    → Whisper ASR + keyframes + captions → timed segments
+            → temporal metadata + dual embeddings
 ```
 
 <details>
@@ -384,8 +420,8 @@ Copy [`.env.example`](.env.example) → `.env`.
 
 | Variable | Effect |
 |----------|--------|
-| `USE_LOCAL_LLM=true` | `OllamaModel` (`OLLAMA_MODEL`, default `qwen2.5:7b`) |
-| `USE_LOCAL_LLM=false` | `GroqModel` (`GROQ_GENERATION_MODEL`) |
+| `USE_LOCAL_LLM=true` (default for local dev) | **Ollama Qwen** → Groq → OpenRouter `:free` |
+| `USE_LOCAL_LLM=false` | Groq → OpenRouter `:free` (skip local; demos / low RAM) |
 | `GROQ_VISION_*` | Frame / image captions |
 | `GROQ_WHISPER_MODEL` | Video ASR |
 
@@ -399,6 +435,8 @@ Copy [`.env.example`](.env.example) → `.env`.
 | `DATABASE_URL` | `postgresql+psycopg2://…@localhost:5433/omnimind_db` |
 | `REDIS_URL` / `CELERY_BROKER_URL` | Redis DB 0 / 1 |
 | `MINIO_URL` | `localhost:9000` |
+| `APP_ENV` | `development` (default) or `production` — production refuses default JWT/DB/MinIO secrets at boot |
+| `JWT_SECRET` | Required strong secret in production |
 | `CORS_ORIGINS` | `http://localhost:5173,…` |
 | `VITE_BACKEND_URL` | Frontend → API (frontend `.env`) |
 
@@ -540,10 +578,13 @@ Detailed per-run JSON is written under `docs/eval/` locally (gitignored); only `
 - [x] React workspace + in-chat uploads  
 - [x] Native token streaming  
 - [x] Video ASR + vision temporal RAG  
-- [ ] Per-user / session isolation  
-- [ ] True SSE or WebSocket event frames  
+- [x] Auth (JWT) + per-user / session artifact isolation  
+- [x] True SSE (`text/event-stream`) on `/query-stream` (JSON `/query` fallback)  
+- [x] Typed vector columns (`embedding_text` 1024 / `embedding_vision` 768) + HNSW  
+- [x] Production secrets fail-fast (`APP_ENV=production`)  
+- [x] Groq 429 retry/backoff with video ASR/vision degrade  
 - [ ] Query-time vision re-check for hard object questions  
-- [ ] Auth (JWT) multi-tenant  
+- [ ] Broader automated coverage beyond critical-path unit tests  
 
 ---
 

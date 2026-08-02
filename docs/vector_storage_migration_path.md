@@ -39,9 +39,11 @@ flowchart LR
 ### Phase 1 — Current (single instance)
 
 - One Postgres container: OLTP (`artifacts`, `ingestion_jobs`, …) **and** `vector_embeddings`
-- Index: IVFFlat or HNSW on embedding cosine ops
+- Typed columns: `embedding_text vector(1024)` (BGE-M3) and `embedding_vision vector(768)` (SigLIP), plus legacy `embedding` for dual-read
+- Partial HNSW indexes on each typed column (`ix_ve_embedding_text_hnsw`, `ix_ve_embedding_vision_hnsw`)
 - Capacity guide: **~500k** embeddings, **~50** concurrent search QPS
 - Also stores **temporal** metadata for video (`artifact_metadata.key = temporal`)
+- Migration: `backend/alembic/versions/9d2e4f6a8b0c_split_text_vision_vector_columns.py`
 
 ### Phase 2 — Read replica isolation
 

@@ -91,6 +91,31 @@ class TestOutputGuard:
         assert result["ok"] is True
         assert "[SSN]" in result["answer"]
 
+    def test_paraphrase_still_grounded(self):
+        context = (
+            "Transformer models use self-attention. "
+            "The query, key, and value projections compute relevance between tokens."
+        )
+        answer = (
+            "Transformers rely on self-attention where query, key, and value "
+            "projections measure how tokens relate to each other."
+        )
+        result = OutputGuard.validate(answer=answer, context=context)
+        assert result["ok"] is True
+        assert result["grounded"] is True
+
+    def test_fluent_hallucination_flagged(self):
+        context = (
+            "The report covers Q3 revenue growth of fifteen percent in retail."
+        )
+        answer = (
+            "From my knowledge, the company secretly launched a quantum chip "
+            "in 2019 with 4096 qubits and won a Nobel prize."
+        )
+        result = OutputGuard.validate(answer=answer, context=context)
+        assert result["ok"] is True
+        assert result["has_hallucination"] is True or result["grounded"] is False
+
 
 # ── IngestionGuard ─────────────────────────────────────────────────────────────
 

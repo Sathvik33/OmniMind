@@ -166,8 +166,12 @@ class VideoService:
             return segments
         except Exception as e:
             if self._is_rate_limit(e):
-                # Let pipeline decide retry vs degrade — re-raise typed signal
-                raise
+                # Retries already exhausted in GroqASRService — degrade to vision-only
+                logger.warning(
+                    "[VideoService] ASR rate-limited after retries; continuing without speech: %s",
+                    e,
+                )
+                return []
             logger.warning("[VideoService] ASR failed (continuing without speech): %s", e)
             return []
 

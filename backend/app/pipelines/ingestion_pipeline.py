@@ -172,7 +172,7 @@ class MultimodalIngestionPipeline:
 
                             # Visual embedding via SigLIP
                             img_emb = embedding_service.embed_image(full_img_path)
-                            vec_vis = VectorEmbedding(
+                            vec_vis = VectorEmbedding.make(
                                 artifact_id=artifact.id,
                                 embedding_type="vision",
                                 content=f"[Image File: {artifact.filename} - {img_name}]\n{desc_json.get('description', '')}",
@@ -281,7 +281,7 @@ class MultimodalIngestionPipeline:
                         stage="CHUNKING_EMBEDDING",
                     )
 
-                vec = VectorEmbedding(
+                vec = VectorEmbedding.make(
                     artifact_id=artifact.id,
                     embedding_type="text",
                     content=enriched_text,
@@ -372,7 +372,7 @@ class MultimodalIngestionPipeline:
         try:
             # 1. Visual embedding via SigLIP
             img_emb = embedding_service.embed_image(file_path)
-            vec_vis = VectorEmbedding(
+            vec_vis = VectorEmbedding.make(
                 artifact_id=artifact.id,
                 embedding_type="vision",
                 content=desc_text,
@@ -382,7 +382,7 @@ class MultimodalIngestionPipeline:
 
             # 2. Text embedding via BGE-M3
             txt_emb = embedding_service.embed_text(desc_text)
-            vec_txt = VectorEmbedding(
+            vec_txt = VectorEmbedding.make(
                 artifact_id=artifact.id,
                 embedding_type="text",
                 content=desc_text,
@@ -460,7 +460,7 @@ class MultimodalIngestionPipeline:
                 text = seg["text"]
                 txt_emb = embedding_service.embed_text(text)
                 vectors_to_add.append(
-                    VectorEmbedding(
+                    VectorEmbedding.make(
                         artifact_id=artifact.id,
                         embedding_type="text",
                         content=text,
@@ -473,7 +473,7 @@ class MultimodalIngestionPipeline:
                     try:
                         img_emb = embedding_service.embed_image(frame_path)
                         vectors_to_add.append(
-                            VectorEmbedding(
+                            VectorEmbedding.make(
                                 artifact_id=artifact.id,
                                 embedding_type="vision",
                                 content=text,

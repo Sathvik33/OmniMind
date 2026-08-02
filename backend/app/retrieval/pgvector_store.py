@@ -31,17 +31,22 @@ class PgVectorStore:
         else:
             raise ValueError(f"Unsupported embedding type: {embedding_type}")
 
-        # 2. Build Base Query String
-        # We use pgvector's cosine distance operator <=> 
-        sql = """
+        # Prefer typed columns (1024 text / 768 vision); fall back to legacy embedding
+        if embedding_type == "vision":
+            vec_expr = "COALESCE(ve.embedding_vision, ve.embedding)"
+        else:
+            vec_expr = "COALESCE(ve.embedding_text, ve.embedding)"
+
+        sql = f"""
             SELECT 
                 ve.id,
                 ve.artifact_id,
                 ve.content,
-                1 - (ve.embedding <=> :query_embedding) AS similarity
+                1 - ({vec_expr} <=> :query_embedding) AS similarity
             FROM vector_embeddings ve
             JOIN artifacts a ON ve.artifact_id = a.id
             WHERE ve.embedding_type = :embedding_type
+              AND {vec_expr} IS NOT NULL
         """
         
         params: Dict[str, Any] = {
@@ -66,7 +71,7 @@ class PgVectorStore:
             # To query the JSON metadata table properly requires JSONB querying 
             pass
 
-        sql += " ORDER BY ve.embedding <=> :query_embedding LIMIT :top_k"
+        sql += f" ORDER BY {vec_expr} <=> :query_embedding LIMIT :top_k"
         params["top_k"] = top_k
 
         # 4. Execute Query & Instrument Read Latency

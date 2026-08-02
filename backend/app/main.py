@@ -27,6 +27,11 @@ from backend.app.core.middleware import ObservabilityMiddleware
 async def lifespan(app: FastAPI):
     # ── Startup ───────────────────────────────────────────────────────────────
 
+    # 0. Refuse default JWT / DB / MinIO secrets outside development
+    from backend.app.core.secrets_check import assert_safe_for_environment
+
+    assert_safe_for_environment()
+
     # 1. Initialize Groq Vision Service (cloud — no GPU load at startup)
     app.state.vision_service = GroqVisionService()
 

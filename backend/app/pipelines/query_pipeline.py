@@ -19,8 +19,7 @@ from backend.app.retrieval.reranker import CrossEncoderReranker
 from backend.app.retrieval.hybrid_retriever import HybridRetriever
 from backend.app.rag.context_builder import ContextBuilder
 from backend.app.rag.generator import Generator as LLMGenerator
-from backend.app.models.groq_model import GroqModel
-from backend.app.models.ollama_model import OllamaModel
+from backend.app.models.failover_llm import FailoverLLM
 from backend.app.core.config import USE_LOCAL_LLM, OLLAMA_MODEL
 from backend.app.guardrails.input_guard import InputGuard
 from backend.app.guardrails.output_guard import OutputGuard
@@ -48,11 +47,15 @@ class QueryPipeline:
         self.collection_manager = self.hybrid_retriever.pg_store
         self.context_builder = ContextBuilder()
         
-        # Local development uses Ollama (qwen2.5:7b); production uses Groq Cloud API
+        # Dev default: local Qwen → Groq → OpenRouter free (FailoverLLM)
+        # USE_LOCAL_LLM=false skips Ollama (demos / low RAM): Groq → OpenRouter
+        self.generator = LLMGenerator(FailoverLLM(prefer_local=USE_LOCAL_LLM))
         if USE_LOCAL_LLM:
-            self.generator = LLMGenerator(OllamaModel(model_name=OLLAMA_MODEL))
-        else:
-            self.generator = LLMGenerator(GroqModel())
+            import logging
+
+            logging.getLogger(__name__).info(
+                "LLM priority: local %s → Groq → OpenRouter free", OLLAMA_MODEL
+            )
 
         # ── Evaluation (lazy singleton) ───────────────────────────────────────
         self._evaluator = None

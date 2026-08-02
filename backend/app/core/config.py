@@ -68,6 +68,26 @@ VIDEO_VISION_ENABLED        = os.getenv("VIDEO_VISION_ENABLED", "true").lower() 
 GROQ_WHISPER_MODEL          = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
 GROQ_ASR_API_KEY            = os.getenv("GROQ_ASR_API_KEY") or GROQ_VISION_API_KEY or GROQ_API_KEY
 
+# ── OpenRouter FALLBACK only (never primary) — free-tier :free models ─────────
+# Generation key + text model; vision uses a separate key + VL model.
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_VISION_API_KEY = os.getenv("OPENROUTER_VISION_API_KEY", "") or OPENROUTER_API_KEY
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+# Free text: openai/gpt-oss-20b:free | google/gemma-4-31b-it:free | google/gemma-4-26b-a4b-it:free
+OPENROUTER_GENERATION_MODEL = os.getenv(
+    "OPENROUTER_GENERATION_MODEL", "openai/gpt-oss-20b:free"
+)
+# Free vision: nvidia/nemotron-nano-12b-v2-vl:free (or gemma-4-*:free multimodal)
+OPENROUTER_VISION_MODEL = os.getenv(
+    "OPENROUTER_VISION_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free"
+)
+# No free STT in current OpenRouter free catalog — leave empty to disable ASR fallback
+OPENROUTER_WHISPER_MODEL = os.getenv("OPENROUTER_WHISPER_MODEL", "")
+OPENROUTER_TEMPERATURE = float(os.getenv("OPENROUTER_TEMPERATURE", "0.2"))
+OPENROUTER_MAX_TOKENS = int(os.getenv("OPENROUTER_MAX_TOKENS", "1500"))
+OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "https://github.com/aegis-rag")
+OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "Aegis")
+
 # ── LangSmith Monitoring ───────────────────────────────────────────────────────
 LANGSMITH_API_KEY      = os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY", "")
 LANGSMITH_PROJECT      = os.getenv("LANGCHAIN_PROJECT", "Aegis")

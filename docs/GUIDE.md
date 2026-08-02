@@ -21,14 +21,19 @@ curl -s -X POST http://127.0.0.1:8000/auth/signup \
 
 ## 1. Boot sequence (checklist)
 
+Architecture: [`architecture.md`](./architecture.md) · PNG: [`assets/aegis-system-architecture.png`](./assets/aegis-system-architecture.png)
+
 ```text
 [ ] docker compose up -d          → Postgres :5433, Redis :6379, MinIO :9000/:9001
-[ ] .env filled                   → DB, MinIO, Groq/Ollama, video sampling
+[ ] .env filled                   → DB, MinIO, USE_LOCAL_LLM=true, Ollama qwen2.5:7b
+[ ] ollama serve + ollama pull qwen2.5:7b
 [ ] uvicorn backend.app.main:app  → API :8000
 [ ] celery worker                 → ingestion actually completes
 [ ] npm run dev (frontend/)       → UI :5173
 [ ] GET /health                   → 200
 ```
+
+**LLM priority (answers):** local Qwen → Groq → OpenRouter `:free`. Vision/ASR ingest still use Groq first.
 
 <details>
 <summary><strong>Windows PowerShell — three terminals</strong></summary>

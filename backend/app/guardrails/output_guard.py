@@ -69,13 +69,81 @@ def _extract_tokens(text: str) -> set:
     return tokens - _STOPWORDS
 
 
+def _split_sentences(text: str) -> List[str]:
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text.strip())
+    return [p.strip() for p in parts if p and len(p.strip()) > 8]
+
+
+def _token_seq(text: str) -> List[str]:
+    return [t for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in _STOPWORDS and len(t) > 2]
+
+
+def _lcs_len(a: List[str], b: List[str]) -> int:
+    """Length of longest common subsequence (for ROUGE-L style overlap)."""
+    if not a or not b:
+        return 0
+    # Bound cost for long answers
+    a = a[:80]
+    b = b[:120]
+    prev = [0] * (len(b) + 1)
+    for tok in a:
+        cur = [0]
+        for j, bt in enumerate(b, start=1):
+            if tok == bt:
+                cur.append(prev[j - 1] + 1)
+            else:
+                cur.append(max(prev[j], cur[-1]))
+        prev = cur
+    return prev[-1]
+
+
+def _sentence_support(answer: str, context: str) -> float:
+    """
+    Fraction of answer sentences that share strong n-gram / LCS overlap
+    with at least one context sentence. Softens paraphrase false positives.
+    """
+    ans_sents = _split_sentences(answer)
+    ctx_sents = _split_sentences(context)
+    if not ans_sents:
+        return 1.0
+    if not ctx_sents:
+        return 0.0
+
+    ctx_seqs = [_token_seq(s) for s in ctx_sents]
+    supported = 0
+    for sent in ans_sents:
+        aseq = _token_seq(sent)
+        if not aseq:
+            supported += 1
+            continue
+        best = 0.0
+        for cseq in ctx_seqs:
+            if not cseq:
+                continue
+            lcs = _lcs_len(aseq, cseq)
+            score = lcs / max(len(aseq), 1)
+            if score > best:
+                best = score
+            # Also reward shared bigrams
+            abigs = set(zip(aseq, aseq[1:])) if len(aseq) > 1 else set()
+            cbigs = set(zip(cseq, cseq[1:])) if len(cseq) > 1 else set()
+            if abigs:
+                bigram = len(abigs & cbigs) / len(abigs)
+                best = max(best, bigram)
+        if best >= 0.35:
+            supported += 1
+    return supported / len(ans_sents)
+
+
 def _check_grounding(answer: str, context: str) -> Tuple[bool, float]:
     """
     Measure if answer is grounded in context.
 
+    Combines:
+      - lexical token overlap (cheap first pass)
+      - sentence-level LCS / bigram support (paraphrase-friendly)
+
     Returns: (is_grounded: bool, confidence: float 0.0-1.0)
-      - Grounded: significant tokens from answer appear in context
-      - Confidence: % of significant answer tokens found in context
     """
     if not context or not context.strip():
         return True, 1.0
@@ -86,12 +154,16 @@ def _check_grounding(answer: str, context: str) -> Tuple[bool, float]:
 
     context_lower = context.lower()
     matching_tokens = sum(1 for tok in answer_tokens if tok in context_lower)
-    confidence = matching_tokens / len(answer_tokens)
+    lexical = matching_tokens / len(answer_tokens)
+    sent_score = _sentence_support(answer, context)
 
-    # Grounded if >60% of significant tokens found in context
-    is_grounded = confidence >= 0.6
+    # Blend: sentence support rescues paraphrases with weaker exact token hits
+    confidence = max(lexical, 0.55 * lexical + 0.45 * sent_score)
+    if sent_score >= 0.67 and lexical >= 0.35:
+        confidence = max(confidence, 0.62)
 
-    return is_grounded, confidence
+    is_grounded = confidence >= 0.55 or (sent_score >= 0.75 and lexical >= 0.25)
+    return is_grounded, min(1.0, confidence)
 
 
 def _detect_hallucination(answer: str, context: str) -> Tuple[bool, List[str]]:

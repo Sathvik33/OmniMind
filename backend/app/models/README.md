@@ -2,13 +2,31 @@
 
 **Path:** `backend/app/models/`
 
-Thin clients with a shared `.generate()` / `.stream()` surface so `QueryPipeline` can swap local vs cloud via `USE_LOCAL_LLM`.
+Thin clients with a shared `.generate()` / `.stream()` surface. `QueryPipeline` always uses `FailoverLLM`, which builds a **cost-aware chain**.
 
 | File | Backend | Role |
 |------|---------|------|
-| `ollama_model.py` | ChatOllama | Local gen; falls back to Groq on failure |
-| `groq_model.py` | ChatGroq | Cloud gen (`GROQ_GENERATION_MODEL`), streaming on |
+| `failover_llm.py` | Chain orchestrator | Local → Groq → OpenRouter |
+| `ollama_model.py` | ChatOllama | Local Qwen (`qwen2.5:7b`) — preferred for daily dev |
+| `groq_model.py` | ChatGroq | Cloud gen (`GROQ_GENERATION_MODEL`), streaming |
+| `openrouter_model.py` | OpenRouter HTTP | Free-tier `:free` models only |
 | `vision_llm.py` | Groq vision | Structured caption dict for image ingest |
+
+Vision / ASR for **ingest** live under `services/` (not these answer LLMs).
+
+---
+
+## Failover priority
+
+```text
+USE_LOCAL_LLM=true  (default for local development)
+  1. Ollama qwen2.5:7b     ← cost-free daily path
+  2. Groq LLaMA            ← if Ollama OOM / down
+  3. OpenRouter :free      ← if Groq rate-limited / 404
+
+USE_LOCAL_LLM=false  (demos / low RAM)
+  1. Groq → 2. OpenRouter :free
+```
 
 ---
 
@@ -16,9 +34,9 @@ Thin clients with a shared `.generate()` / `.stream()` surface so `QueryPipeline
 
 | Without wrappers | With wrappers |
 |------------------|---------------|
-| Pipeline imports LangChain classes directly | One config flag switches providers |
-| Stream/generate APIs diverge | Same methods on both |
-| Vision caption shape drifts | `VisionLLM` normalizes dict fields |
+| Pipeline imports LangChain classes directly | One config flag reorders the chain |
+| Stream/generate APIs diverge | Same methods on every backend |
+| Fallbacks scattered | Single `FailoverLLM` policy |
 
 ---
 
@@ -28,14 +46,13 @@ Thin clients with a shared `.generate()` / `.stream()` surface so `QueryPipeline
 |---------|---------------|-----|
 | Temperature | ~0.2 | Factual RAG |
 | `max_tokens` / `num_predict` | ~1500 | Long enough for structured sections |
-| Streaming | enabled on ChatGroq / ChatOllama | UI token stream |
-
-Vision captions are **not** these LLMs — see `services/groq_vision_service.py`.
+| Streaming | enabled | UI SSE token stream |
 
 ---
 
 ## Design rules
 
-1. Keep provider SDKs out of `pipelines/` and `api/`.  
-2. Stream path must tolerate `chunk.content is None`.  
-3. Prefer failing closed to Groq only when keys exist (Ollama fallback path).
+1. Keep provider SDKs out of `pipelines/` and `api/`.
+2. Stream path must tolerate `chunk.content is None`.
+3. OpenRouter is **fallback only** and must use `:free` model IDs.
+4. Prefer local Qwen for development cost control.

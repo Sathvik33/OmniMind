@@ -95,16 +95,23 @@ def query_stream(
     session_id = request.session_id
     query_text = request.query
 
+    def _sse_data(payload: str) -> str:
+        # SSE: each event line is "data: ..."; blank line terminates the event
+        lines = payload.split("\n")
+        return "".join(f"data: {line}\n" for line in lines) + "\n"
+
     def token_generator():
         parts: List[str] = []
         try:
             for token in pipeline.stream_answer(query_text, artifact_ids=artifact_ids):
                 parts.append(token)
-                yield token
+                yield _sse_data(token)
+            yield _sse_data("[DONE]")
         except Exception as e:
             err = f"\n\n❌ Error: {str(e)}\n"
             parts.append(err)
-            yield err
+            yield _sse_data(err)
+            yield _sse_data("[DONE]")
         finally:
             # Persist assistant reply (strip UI metadata lines lightly)
             raw = "".join(parts)
@@ -132,9 +139,10 @@ def query_stream(
 
     return StreamingResponse(
         token_generator(),
-        media_type="text/plain; charset=utf-8",
+        media_type="text/event-stream; charset=utf-8",
         headers={
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
         },
     )

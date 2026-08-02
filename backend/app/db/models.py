@@ -106,10 +106,36 @@ class VectorEmbedding(Base):
     artifact_id = Column(Integer, ForeignKey("artifacts.id"), nullable=False)
     embedding_type = Column(String, index=True, nullable=False) # e.g., 'text', 'vision', 'ocr', 'summary'
     content = Column(Text, nullable=True) # Raw text chunk if applicable
-    embedding = Column(Vector()) # Unbounded dimension to support both BGE-M3 (1024) and SigLIP2 (768)
+    # Legacy unbounded column kept for rollback / dual-read during migration
+    embedding = Column(Vector())
+    # Typed columns enable per-modality ANN indexes (BGE-M3 1024 / SigLIP 768)
+    embedding_text = Column(Vector(1024), nullable=True)
+    embedding_vision = Column(Vector(768), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     artifact = relationship("Artifact", back_populates="vectors")
+
+    @classmethod
+    def make(
+        cls,
+        *,
+        artifact_id: int,
+        embedding_type: str,
+        content,
+        embedding,
+    ) -> "VectorEmbedding":
+        """Create a row that populates legacy + typed vector columns."""
+        kwargs = {
+            "artifact_id": artifact_id,
+            "embedding_type": embedding_type,
+            "content": content,
+            "embedding": embedding,
+        }
+        if embedding_type == "vision":
+            kwargs["embedding_vision"] = embedding
+        else:
+            kwargs["embedding_text"] = embedding
+        return cls(**kwargs)
 
 class IngestionJob(Base):
     __tablename__ = "ingestion_jobs"
